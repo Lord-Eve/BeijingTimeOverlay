@@ -10,6 +10,8 @@ internal sealed class ClockForm : Form
 {
     private const int WindowWidth = 92;
     private const int WindowHeight = 51;
+    private const int FullscreenDetectionInterval = 250;
+    private const int FullscreenBoundsTolerance = 8;
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
@@ -30,12 +32,14 @@ internal sealed class ClockForm : Form
     private readonly OverlaySettings _settings;
     private readonly TimeZoneInfo _beijingTimeZone;
     private readonly System.Windows.Forms.Timer _clockTimer;
+    private readonly System.Windows.Forms.Timer _fullscreenTimer;
     private readonly System.Windows.Forms.Timer _saveTimer;
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _trayIcon;
     private readonly ContextMenuStrip _menu;
     private ToolStripMenuItem _topMostItem = null!;
     private ToolStripMenuItem _clickThroughItem = null!;
+    private ToolStripMenuItem _hideWhenFullscreenItem = null!;
     private ToolStripMenuItem _startupItem = null!;
     private readonly Font _clockFont;
 
@@ -45,6 +49,7 @@ internal sealed class ClockForm : Form
     private bool _isLoadingPosition;
     private bool _isDisposed;
     private bool _clickThrough;
+    private bool _hiddenByFullscreen;
 
     public ClockForm()
     {
@@ -97,6 +102,10 @@ internal sealed class ClockForm : Form
             KeepAboveTaskbar();
         };
 
+        // This short poll only runs when the user enables fullscreen hiding.
+        _fullscreenTimer = new System.Windows.Forms.Timer { Interval = FullscreenDetectionInterval };
+        _fullscreenTimer.Tick += (_, _) => UpdateFullscreenVisibility();
+
         _saveTimer = new System.Windows.Forms.Timer { Interval = 300 };
         _saveTimer.Tick += (_, _) =>
         {
@@ -121,6 +130,10 @@ internal sealed class ClockForm : Form
         ApplySavedOrDefaultPosition();
         UpdateClock();
         _clockTimer.Start();
+        if (_settings.HideWhenFullscreen)
+        {
+            _fullscreenTimer.Start();
+        }
     }
 
     protected override void OnShown(EventArgs e)
@@ -203,6 +216,12 @@ internal sealed class ClockForm : Form
         };
         _clickThroughItem.Click += (_, _) => SetClickThrough(!_settings.ClickThrough);
 
+        _hideWhenFullscreenItem = new ToolStripMenuItem("全屏应用时自动隐藏")
+        {
+            CheckOnClick = true,
+        };
+        _hideWhenFullscreenItem.Click += (_, _) => SetHideWhenFullscreen(!_settings.HideWhenFullscreen);
+
         var moveItem = new ToolStripMenuItem("移到当前屏幕右下角");
         moveItem.Click += (_, _) => PlaceAtCurrentScreenBottomRight();
 
@@ -222,6 +241,7 @@ internal sealed class ClockForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_topMostItem);
         menu.Items.Add(_clickThroughItem);
+        menu.Items.Add(_hideWhenFullscreenItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(moveItem);
         menu.Items.Add(resetItem);
@@ -246,6 +266,64 @@ internal sealed class ClockForm : Form
         _timeText = newTimeText;
         _dateText = newDateText;
         Invalidate();
+    }
+
+    private void UpdateFullscreenVisibility()
+    {
+        if (!_settings.HideWhenFullscreen)
+        {
+            return;
+        }
+
+        if (IsFullscreenForegroundWindow())
+        {
+            if (Visible)
+            {
+                _hiddenByFullscreen = true;
+                Hide();
+            }
+
+            return;
+        }
+
+        RestoreAfterFullscreen();
+    }
+
+    private bool IsFullscreenForegroundWindow()
+    {
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow == IntPtr.Zero || foregroundWindow == Handle ||
+            !IsWindowVisible(foregroundWindow) || IsIconic(foregroundWindow) ||
+            !GetWindowRect(foregroundWindow, out var windowBounds))
+        {
+            return false;
+        }
+
+        var foregroundScreen = Screen.FromHandle(foregroundWindow);
+        var overlayScreen = Screen.FromRectangle(Bounds);
+        if (!string.Equals(foregroundScreen.DeviceName, overlayScreen.DeviceName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var monitorBounds = foregroundScreen.Bounds;
+        return windowBounds.Left <= monitorBounds.Left + FullscreenBoundsTolerance &&
+               windowBounds.Top <= monitorBounds.Top + FullscreenBoundsTolerance &&
+               windowBounds.Right >= monitorBounds.Right - FullscreenBoundsTolerance &&
+               windowBounds.Bottom >= monitorBounds.Bottom - FullscreenBoundsTolerance;
+    }
+
+    private void RestoreAfterFullscreen()
+    {
+        if (!_hiddenByFullscreen)
+        {
+            return;
+        }
+
+        _hiddenByFullscreen = false;
+        Show();
+        TopMost = _settings.TopMost;
+        KeepAboveTaskbar();
     }
 
     private void ApplySavedOrDefaultPosition()
@@ -372,6 +450,24 @@ internal sealed class ClockForm : Form
         RefreshMenuChecks();
     }
 
+    private void SetHideWhenFullscreen(bool enabled)
+    {
+        _settings.HideWhenFullscreen = enabled;
+        if (enabled)
+        {
+            _fullscreenTimer.Start();
+            UpdateFullscreenVisibility();
+        }
+        else
+        {
+            _fullscreenTimer.Stop();
+            RestoreAfterFullscreen();
+        }
+
+        SaveSettings();
+        RefreshMenuChecks();
+    }
+
     private void ToggleStartup()
     {
         var enabled = !StartupManager.IsEnabled();
@@ -395,6 +491,7 @@ internal sealed class ClockForm : Form
     {
         _topMostItem.Checked = _settings.TopMost;
         _clickThroughItem.Checked = _settings.ClickThrough;
+        _hideWhenFullscreenItem.Checked = _settings.HideWhenFullscreen;
         _startupItem.Checked = _settings.StartWithWindows || StartupManager.IsEnabled();
     }
 
@@ -438,8 +535,10 @@ internal sealed class ClockForm : Form
         SaveSettings();
         _isDisposed = true;
         _clockTimer.Stop();
+        _fullscreenTimer.Stop();
         _saveTimer.Stop();
         _clockTimer.Dispose();
+        _fullscreenTimer.Dispose();
         _saveTimer.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -512,6 +611,30 @@ internal sealed class ClockForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr handle, out NativeRect windowBounds);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(

@@ -13,6 +13,8 @@ internal sealed class OverlaySettings
 
     public bool ClickThrough { get; set; }
 
+    public bool HideWhenFullscreen { get; set; }
+
     public bool StartWithWindows { get; set; }
 }
 

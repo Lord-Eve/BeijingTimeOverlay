@@ -1,5 +1,10 @@
 @echo off
 setlocal
+if exist "%~dp0bin\Release\net8.0-windows\BeijingTimeOverlay.exe" (
+    start "" "%~dp0bin\Release\net8.0-windows\BeijingTimeOverlay.exe"
+    exit /b 0
+)
+
 if exist "%~dp0BeijingTimeOverlay.exe" (
     start "" "%~dp0BeijingTimeOverlay.exe"
     exit /b 0
@@ -10,13 +15,7 @@ if exist "%~dp0发布\BeijingTimeOverlay.exe" (
     exit /b 0
 )
 
-where dotnet >nul 2>nul
-if errorlevel 1 (
-    echo 未找到 .NET SDK。请先安装 .NET 8 SDK，或先发布应用后再运行。
-    pause
-    exit /b 1
-)
-
-dotnet run --project "%~dp0北京时间浮窗.csproj" -c Release
-exit /b %errorlevel%
+echo 没有找到可运行程序。请下载 GitHub Release 程序包，或先构建项目。
+pause
+exit /b 1
 exit /b 0
