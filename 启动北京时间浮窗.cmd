@@ -18,4 +18,3 @@ if exist "%~dp0发布\BeijingTimeOverlay.exe" (
 echo 没有找到可运行程序。请下载 GitHub Release 程序包，或先构建项目。
 pause
 exit /b 1
-exit /b 0
