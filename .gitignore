@@ -1,0 +1,11 @@
+.vs/
+/bin/
+/obj/
+/发布/
+*.pdb
+*.user
+*.suo
+/BeijingTimeOverlay.exe
+/BeijingTimeOverlay.dll
+/BeijingTimeOverlay.deps.json
+/BeijingTimeOverlay.runtimeconfig.json
