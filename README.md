@@ -2,7 +2,7 @@
 
 一个不修改 Windows 系统时区的独立北京时间显示工具。
 
-当前版本：`1.0.0`
+当前版本：`1.1.0`
 
 ## 设计
 
@@ -16,7 +16,7 @@
 
 ## 运行
 
-日常使用请从 [GitHub Releases](https://github.com/Lord-Eve/BeijingTimeOverlay/releases) 下载并解压 Windows 程序包，然后双击 `BeijingTimeOverlay.exe`；不需要打开 PowerShell。
+日常使用请从 [GitHub Releases](https://github.com/Lord-Eve/BeijingTimeOverlay/releases) 下载并解压 Windows 程序包，然后双击 `BeijingTimeOverlay.exe`；不需要打开 PowerShell。程序目前没有安装程序或代码签名，Windows SmartScreen 可能显示提示；可用 Release 附带的 SHA-256 文件核对下载包。
 
 如果使用源码，需要 Windows 和 .NET 8 SDK。先在项目目录构建一次：
 
@@ -24,22 +24,18 @@
 dotnet build .\北京时间浮窗.csproj -c Release
 ```
 
-之后双击 `启动北京时间浮窗.cmd` 即可直接启动 GUI 程序，不会把终端留在后台。脚本优先使用 `bin\Release\net8.0-windows` 下的构建版本。
-
-发布版本：
-
-```powershell
-dotnet publish .\北京时间浮窗.csproj -c Release -r win-x64 --self-contained false -o .\发布
-```
-
-可双击 `启动北京时间浮窗.cmd`。若已有构建产物，它会直接启动；否则会用 .NET SDK 从源码运行。也可以在发布后直接双击 `发布\BeijingTimeOverlay.exe`。
+之后双击 `启动北京时间浮窗.cmd` 即可直接启动 GUI 程序，不需要保持 PowerShell 或命令提示符窗口。脚本按顺序查找 Release 构建目录、项目根目录和 `发布` 目录中的程序；如果都不存在，会提示先构建或下载 Release 程序包。
 再次启动不会创建第二个实例，而是唤醒并恢复已有浮窗。
 
 首次运行后，右键托盘图标可以管理窗口。窗口位置和开关保存在：
 
 `%APPDATA%\BeijingTimeOverlay\settings.json`
 
-默认不启用全屏自动隐藏。勾选托盘菜单中的“全屏应用时自动隐藏”后，当同一显示器上的前台窗口覆盖整个屏幕时，浮窗会暂时隐藏；退出全屏后自动恢复。此检测适用于覆盖整屏的游戏和视频窗口，不按具体程序名称筛选。
+默认不启用全屏自动隐藏。勾选托盘菜单中的“全屏应用时自动隐藏”后，当同一显示器上的前台窗口覆盖整个屏幕时，浮窗会暂时隐藏；退出全屏后自动恢复。此检测适用于覆盖整屏的游戏和视频窗口，不按具体程序名称筛选。完整版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 维护者发布流程
+
+更新 `.csproj` 中的版本号和 `CHANGELOG.md` 后，将对应的 `vMAJOR.MINOR.PATCH` tag 推送到 GitHub。GitHub Actions 会校验 tag、项目版本和变更记录，构建 Windows x64 自包含单文件，生成 ZIP 与 SHA-256 校验文件，验证上传资产后发布 GitHub Release。已发布版本保留为历史快照，不覆盖旧 tag 或旧资产。
 
 ## 验收重点
 

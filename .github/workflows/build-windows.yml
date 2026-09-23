@@ -1,57 +1,107 @@
-name: Build Windows release
+name: Build and publish Windows release
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: windows-latest
     steps:
-      - name: Check out v1.0.0 source
+      - name: Check out tagged source
         uses: actions/checkout@v7
         with:
-          ref: v1.0.0
           persist-credentials: false
 
-      - name: Verify release commit
+      - name: Verify tag and prepare release notes
         shell: pwsh
         run: |
-          $actual = (git rev-parse HEAD).Trim()
-          if ($actual -ne '6459ddbb38104ca74fa44895996faac93e0f26be') {
-            throw "Unexpected v1.0.0 commit: $actual"
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(?<Version>\d+\.\d+\.\d+)$') {
+            throw "Release tag must use vMAJOR.MINOR.PATCH: $tag"
           }
+
+          $tagVersion = $Matches.Version
+          [xml]$project = Get-Content '.\北京时间浮窗.csproj' -Raw
+          $projectVersion = [string]$project.Project.PropertyGroup.Version
+          if ($projectVersion -ne $tagVersion) {
+            throw "Tag $tag does not match project version $projectVersion"
+          }
+
+          $changelog = Get-Content '.\CHANGELOG.md' -Raw
+          $escapedVersion = [regex]::Escape($tagVersion)
+          $pattern = "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)"
+          $match = [regex]::Match($changelog, $pattern)
+          if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups['body'].Value)) {
+            throw "No release notes found for $tagVersion in CHANGELOG.md"
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          [IO.File]::WriteAllText($notesPath, $match.Groups['body'].Value.Trim() + "`n", [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "RELEASE_NOTES_PATH=$notesPath`n", [Text.UTF8Encoding]::new($false))
 
       - name: Set up .NET 8
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
-      - name: Publish Windows x64 executable
+      - name: Publish and package Windows x64 executable
         shell: pwsh
         run: |
+          $tag = $env:GITHUB_REF_NAME
+          New-Item -ItemType Directory -Path '.\dist\win-x64', '.\release' -Force | Out-Null
+
           dotnet publish '.\北京时间浮窗.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o '.\dist\win-x64'
           if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
+
           $files = @(Get-ChildItem '.\dist\win-x64' -File)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'BeijingTimeOverlay.exe') {
             throw "Unexpected publish output: $($files.Name -join ', ')"
           }
 
-      - name: Package and checksum
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path '.\release' -Force | Out-Null
-          $zip = '.\release\BeijingTimeOverlay-v1.0.0-win-x64.zip'
-          Compress-Archive -Path '.\dist\win-x64\BeijingTimeOverlay.exe' -DestinationPath $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  BeijingTimeOverlay-v1.0.0-win-x64.zip" | Set-Content '.\release\BeijingTimeOverlay-v1.0.0-win-x64.zip.sha256' -Encoding ascii
+          $zipName = "BeijingTimeOverlay-$tag-win-x64.zip"
+          $checksumName = "$zipName.sha256"
+          $zipPath = ".\release\$zipName"
+          $checksumPath = ".\release\$checksumName"
+          Compress-Archive -LiteralPath '.\dist\win-x64\BeijingTimeOverlay.exe' -DestinationPath $zipPath -CompressionLevel Optimal
 
-      - name: Upload release files
-        uses: actions/upload-artifact@v7
-        with:
-          name: BeijingTimeOverlay-v1.0.0-win-x64
-          path: release/*
-          if-no-files-found: error
-          retention-days: 7
+          $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText($checksumPath, "$hash  $zipName`n", [Text.ASCIIEncoding]::new())
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "RELEASE_ZIP_NAME=$zipName`nRELEASE_CHECKSUM_NAME=$checksumName`nRELEASE_ZIP_SHA256=$hash`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Create draft release and verify uploaded assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $zipPath = ".\release\$env:RELEASE_ZIP_NAME"
+          $checksumPath = ".\release\$env:RELEASE_CHECKSUM_NAME"
+
+          gh release create $tag $zipPath $checksumPath --verify-tag --draft --title "北京时间浮窗 $tag（Windows x64）" --notes-file $env:RELEASE_NOTES_PATH
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create draft GitHub release or upload assets' }
+
+          $assetLines = gh release view $tag --json assets --jq '.assets[] | [.name, .digest] | @tsv'
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect uploaded release assets' }
+          $assetDigests = @{}
+          foreach ($line in $assetLines) {
+            $parts = $line -split "`t", 2
+            if ($parts.Count -eq 2) { $assetDigests[$parts[0]] = $parts[1] }
+          }
+
+          foreach ($name in @($env:RELEASE_ZIP_NAME, $env:RELEASE_CHECKSUM_NAME)) {
+            if (-not $assetDigests.ContainsKey($name)) {
+              throw "Release is missing asset $name"
+            }
+          }
+
+          if ($assetDigests[$env:RELEASE_ZIP_NAME] -and $assetDigests[$env:RELEASE_ZIP_NAME] -ne "sha256:$env:RELEASE_ZIP_SHA256") {
+            throw 'GitHub-reported ZIP digest does not match the locally computed SHA-256'
+          }
+
+          gh release edit $tag --verify-tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to publish the verified draft release' }
