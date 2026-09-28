@@ -32,7 +32,12 @@ internal static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new ClockForm());
+            // Run without a main form: the overlay's window can be destroyed
+            // with its taskbar owner when Explorer restarts, and the form
+            // rebuilds itself instead of ending the message loop.
+            using var clock = new ClockForm();
+            clock.Show();
+            Application.Run();
         }
         catch (Exception exception)
         {
