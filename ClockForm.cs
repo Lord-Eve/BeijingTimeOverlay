@@ -1,8 +1,10 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace BeijingTimeOverlay;
 
@@ -24,16 +26,55 @@ internal sealed class ClockForm : Form
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpShowWindow = 0x0040;
+    private const int GwlpHwndParent = -8;
+    private const uint EventSystemForeground = 0x0003;
+    private const uint WinEventOutOfContext = 0x0000;
+    private const uint MonitorDefaultToNearest = 0x00000002;
+    private const int ForegroundReassertDelay = 150;
+    private const uint GwOwner = 4;
+    private const string CoreWindowClass = "Windows.UI.Core.CoreWindow";
 
     private static readonly CultureInfo DisplayCulture = CultureInfo.InvariantCulture;
     private static readonly Color OverlayColor = Color.FromArgb(40, 38, 29);
     private static readonly IntPtr HwndTopmost = new(-1);
+    private static readonly int TaskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
+
+    // The desktop and taskbar can cover a whole monitor but are not
+    // fullscreen applications.
+    private static readonly string[] ShellWindowClasses =
+    {
+        "Progman",
+        "WorkerW",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+    };
+
+    private static readonly string[] TaskbarWindowClasses =
+    {
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+    };
+
+    // Shell flyouts (Start, search, notification center) are CoreWindows, but
+    // so are some full-screen UWP apps and games; only exempt these hosts.
+    private static readonly string[] ShellFlyoutProcesses =
+    {
+        "StartMenuExperienceHost",
+        "SearchHost",
+        "SearchApp",
+        "SearchUI",
+        "ShellExperienceHost",
+    };
 
     private readonly OverlaySettings _settings;
     private readonly TimeZoneInfo _beijingTimeZone;
     private readonly System.Windows.Forms.Timer _clockTimer;
     private readonly System.Windows.Forms.Timer _fullscreenTimer;
     private readonly System.Windows.Forms.Timer _saveTimer;
+    private readonly System.Windows.Forms.Timer _reassertTimer;
+    private readonly WinEventDelegate _foregroundChangedCallback;
+    private IntPtr _foregroundHook;
+    private IntPtr _frameworkOwner;
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _trayIcon;
     private readonly ContextMenuStrip _menu;
@@ -50,6 +91,7 @@ internal sealed class ClockForm : Form
     private bool _isDisposed;
     private bool _clickThrough;
     private bool _hiddenByFullscreen;
+    private bool _hiddenByUser;
 
     public ClockForm()
     {
@@ -99,6 +141,7 @@ internal sealed class ClockForm : Form
         _clockTimer.Tick += (_, _) =>
         {
             UpdateClock();
+            AttachToTaskbar();
             KeepAboveTaskbar();
         };
 
@@ -113,6 +156,27 @@ internal sealed class ClockForm : Form
             SaveSettings();
         };
 
+        // Explorer finishes its own z-order changes shortly after the
+        // foreground switch, so re-assert once more after it settles.
+        _reassertTimer = new System.Windows.Forms.Timer { Interval = ForegroundReassertDelay };
+        _reassertTimer.Tick += (_, _) =>
+        {
+            _reassertTimer.Stop();
+            KeepAboveTaskbar();
+        };
+
+        // Out-of-context WinEvents are delivered on this UI thread's message loop.
+        // Keep the delegate in a field so the GC cannot collect it while hooked.
+        _foregroundChangedCallback = HandleForegroundChanged;
+        _foregroundHook = SetWinEventHook(
+            EventSystemForeground,
+            EventSystemForeground,
+            IntPtr.Zero,
+            _foregroundChangedCallback,
+            0,
+            0,
+            WinEventOutOfContext);
+
         MouseDown += HandleMouseDown;
         LocationChanged += (_, _) =>
         {
@@ -125,7 +189,11 @@ internal sealed class ClockForm : Form
         DpiChanged += (_, _) => BeginInvoke((Action)(EnsureWindowGeometry));
         Deactivate += (_, _) => KeepAboveTaskbar();
         FormClosing += HandleFormClosing;
-        FormClosed += (_, _) => DisposeResources();
+        FormClosed += (_, _) =>
+        {
+            DisposeResources();
+            Application.ExitThread();
+        };
 
         ApplySavedOrDefaultPosition();
         UpdateClock();
@@ -140,10 +208,44 @@ internal sealed class ClockForm : Form
     {
         base.OnShown(e);
         EnsureWindowGeometry();
+        AttachToTaskbar();
         KeepAboveTaskbar();
     }
 
     protected override bool ShowWithoutActivation => true;
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        // Form.CreateHandle() is still running here: with ShowInTaskbar=false
+        // WinForms afterwards points the native owner at its hidden taskbar
+        // owner window, so attach once handle creation has finished.
+        _frameworkOwner = IntPtr.Zero;
+        BeginInvoke((Action)(() =>
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            AttachToTaskbar();
+            KeepAboveTaskbar();
+        }));
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        base.OnHandleDestroyed(e);
+        if (_allowClose || _isDisposed || RecreatingHandle)
+        {
+            return;
+        }
+
+        // When Explorer restarts, windows owned by the old taskbar can be
+        // destroyed with it. Rebuild the overlay instead of silently vanishing.
+        SynchronizationContext.Current?.Post(_ => RestoreAfterHandleLoss(), null);
+    }
 
     protected override CreateParams CreateParams
     {
@@ -164,11 +266,18 @@ internal sealed class ClockForm : Form
     {
         if (message.Msg == WmShowClock)
         {
+            _hiddenByUser = false;
             Show();
             EnsureWindowGeometry();
             TopMost = _settings.TopMost;
             KeepAboveTaskbar();
             return;
+        }
+
+        if (message.Msg == TaskbarCreatedMessage)
+        {
+            AttachToTaskbar();
+            KeepAboveTaskbar();
         }
 
         if (message.Msg == WmNcHitTest && _clickThrough)
@@ -294,6 +403,7 @@ internal sealed class ClockForm : Form
         var foregroundWindow = GetForegroundWindow();
         if (foregroundWindow == IntPtr.Zero || foregroundWindow == Handle ||
             !IsWindowVisible(foregroundWindow) || IsIconic(foregroundWindow) ||
+            IsShellWindow(foregroundWindow) ||
             !GetWindowRect(foregroundWindow, out var windowBounds))
         {
             return false;
@@ -311,6 +421,102 @@ internal sealed class ClockForm : Form
                windowBounds.Top <= monitorBounds.Top + FullscreenBoundsTolerance &&
                windowBounds.Right >= monitorBounds.Right - FullscreenBoundsTolerance &&
                windowBounds.Bottom >= monitorBounds.Bottom - FullscreenBoundsTolerance;
+    }
+
+    private static bool IsShellWindow(IntPtr window)
+    {
+        var className = GetWindowClassName(window);
+        if (ShellWindowClasses.Contains(className, StringComparer.Ordinal))
+        {
+            return true;
+        }
+
+        return className == CoreWindowClass && IsShellFlyoutProcess(window);
+    }
+
+    private static bool IsShellFlyoutProcess(IntPtr window)
+    {
+        GetWindowThreadProcessId(window, out var processId);
+        if (processId == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return ShellFlyoutProcesses.Contains(process.ProcessName, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            // The process exited between the foreground check and this lookup.
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static string GetWindowClassName(IntPtr window)
+    {
+        var className = new StringBuilder(256);
+        return GetClassName(window, className, className.Capacity) == 0
+            ? string.Empty
+            : className.ToString();
+    }
+
+    private static bool IsTaskbarWindow(IntPtr window)
+    {
+        return window != IntPtr.Zero &&
+               TaskbarWindowClasses.Contains(GetWindowClassName(window), StringComparer.Ordinal);
+    }
+
+    private void HandleForegroundChanged(
+        IntPtr hook,
+        uint eventType,
+        IntPtr window,
+        int objectId,
+        int childId,
+        uint threadId,
+        uint eventTime)
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        if (_settings.HideWhenFullscreen)
+        {
+            UpdateFullscreenVisibility();
+        }
+
+        AttachToTaskbar();
+        KeepAboveTaskbar();
+        _reassertTimer.Stop();
+        _reassertTimer.Start();
+    }
+
+    private void RestoreAfterHandleLoss()
+    {
+        if (_allowClose || _isDisposed || IsDisposed || IsHandleCreated)
+        {
+            return;
+        }
+
+        // Reset WinForms' visible state first so Show() really creates a new window.
+        Hide();
+        if (_hiddenByUser || _hiddenByFullscreen)
+        {
+            // Keep a hidden window so a second launch can still find and wake it.
+            CreateHandle();
+            return;
+        }
+
+        Show();
+        EnsureWindowGeometry();
+        TopMost = _settings.TopMost;
+        KeepAboveTaskbar();
     }
 
     private void RestoreAfterFullscreen()
@@ -405,10 +611,12 @@ internal sealed class ClockForm : Form
     {
         if (Visible)
         {
+            _hiddenByUser = true;
             Hide();
         }
         else
         {
+            _hiddenByUser = false;
             Show();
             TopMost = _settings.TopMost;
             KeepAboveTaskbar();
@@ -419,6 +627,7 @@ internal sealed class ClockForm : Form
     {
         _settings.TopMost = enabled;
         TopMost = enabled;
+        AttachToTaskbar();
         KeepAboveTaskbar();
         SaveSettings();
         RefreshMenuChecks();
@@ -439,6 +648,78 @@ internal sealed class ClockForm : Form
             0,
             0,
             SwpNoActivate | SwpNoMove | SwpNoSize | SwpShowWindow);
+    }
+
+    private void AttachToTaskbar()
+    {
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        // The taskbar is itself a topmost window and Windows keeps it above
+        // other topmost windows while it is the foreground window, so a plain
+        // HWND_TOPMOST re-assert loses after a taskbar click. An owned window
+        // always stays above its owner, so let the taskbar under the overlay
+        // own it. Always compare with the real native owner: WinForms can
+        // reset it (for example while creating or recreating the handle).
+        var currentOwner = GetWindow(Handle, GwOwner);
+        var currentIsTaskbar = IsTaskbarWindow(currentOwner);
+        if (currentOwner != IntPtr.Zero && !currentIsTaskbar)
+        {
+            // Remember WinForms' own owner so turning TopMost off restores it.
+            _frameworkOwner = currentOwner;
+        }
+
+        if (!_settings.TopMost)
+        {
+            if (currentIsTaskbar)
+            {
+                SetWindowOwner(Handle, _frameworkOwner);
+            }
+
+            return;
+        }
+
+        var taskbar = FindTaskbarForWindow(Handle);
+        if (taskbar != IntPtr.Zero && taskbar != currentOwner)
+        {
+            SetWindowOwner(Handle, taskbar);
+        }
+    }
+
+    private static IntPtr FindTaskbarForWindow(IntPtr window)
+    {
+        var monitor = MonitorFromWindow(window, MonitorDefaultToNearest);
+        var primaryTaskbar = FindWindow("Shell_TrayWnd", null);
+        if (primaryTaskbar != IntPtr.Zero &&
+            MonitorFromWindow(primaryTaskbar, MonitorDefaultToNearest) == monitor)
+        {
+            return primaryTaskbar;
+        }
+
+        var secondaryTaskbar = IntPtr.Zero;
+        while ((secondaryTaskbar = FindWindowEx(IntPtr.Zero, secondaryTaskbar, "Shell_SecondaryTrayWnd", null)) != IntPtr.Zero)
+        {
+            if (MonitorFromWindow(secondaryTaskbar, MonitorDefaultToNearest) == monitor)
+            {
+                return secondaryTaskbar;
+            }
+        }
+
+        return primaryTaskbar;
+    }
+
+    private static void SetWindowOwner(IntPtr window, IntPtr owner)
+    {
+        if (IntPtr.Size == 8)
+        {
+            SetWindowLongPtr64(window, GwlpHwndParent, owner);
+        }
+        else
+        {
+            SetWindowLong32(window, GwlpHwndParent, owner.ToInt32());
+        }
     }
 
     private void SetClickThrough(bool enabled)
@@ -521,6 +802,7 @@ internal sealed class ClockForm : Form
         }
 
         e.Cancel = true;
+        _hiddenByUser = true;
         Hide();
         SaveSettings();
     }
@@ -534,12 +816,20 @@ internal sealed class ClockForm : Form
 
         SaveSettings();
         _isDisposed = true;
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
+
         _clockTimer.Stop();
         _fullscreenTimer.Stop();
         _saveTimer.Stop();
+        _reassertTimer.Stop();
         _clockTimer.Dispose();
         _fullscreenTimer.Dispose();
         _saveTimer.Dispose();
+        _reassertTimer.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _trayIcon.Dispose();
@@ -626,6 +916,56 @@ internal sealed class ClockForm : Form
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr handle, out NativeRect windowBounds);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr handle, StringBuilder className, int maxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int RegisterWindowMessage(string message);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string? className, string? windowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr handle, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr handle, uint flags);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr handle, int index, IntPtr value);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLong32(IntPtr handle, int index, int value);
+
+    private delegate void WinEventDelegate(
+        IntPtr hook,
+        uint eventType,
+        IntPtr window,
+        int objectId,
+        int childId,
+        uint threadId,
+        uint eventTime);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        IntPtr module,
+        WinEventDelegate callback,
+        uint processId,
+        uint threadId,
+        uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWinEvent(IntPtr hook);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
