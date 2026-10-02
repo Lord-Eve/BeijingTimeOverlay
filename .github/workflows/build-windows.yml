@@ -34,7 +34,7 @@ jobs:
 
           $changelog = Get-Content '.\CHANGELOG.md' -Raw
           $escapedVersion = [regex]::Escape($tagVersion)
-          $pattern = "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)"
+          $pattern = "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|^\[[^\]]+\]: |\z)"
           $match = [regex]::Match($changelog, $pattern)
           if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups['body'].Value)) {
             throw "No release notes found for $tagVersion in CHANGELOG.md"
