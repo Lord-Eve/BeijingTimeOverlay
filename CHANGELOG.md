@@ -27,3 +27,21 @@
 ### 发布
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件。本项目没有安装程序或代码签名，Windows SmartScreen 可能显示提示。
+
+## [1.0.0] - 2026-09-23
+
+### 新增
+
+- 首个版本：独立显示北京时间的无边框浮窗，以 UTC 为时间源并通过 Windows 的 `China Standard Time` 时区换算，不修改系统时间或时区。
+- 两行显示 24 小时制时间和日期，默认覆盖在屏幕右下角的任务栏时钟上。
+- 托盘菜单支持显示/隐藏、始终置顶、鼠标穿透、移到当前屏幕右下角、重置到主屏幕右下角和登录 Windows 时启动。
+- 支持拖动并记住位置；重复启动时唤醒已有浮窗而不是创建第二个实例。
+
+### 发布
+
+- GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
+
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/releases/tag/v1.0.0

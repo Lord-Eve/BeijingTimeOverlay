@@ -37,6 +37,8 @@ dotnet build .\北京时间浮窗.csproj -c Release
 
 更新 `.csproj` 中的版本号和 `CHANGELOG.md` 后，将对应的 `vMAJOR.MINOR.PATCH` tag 推送到 GitHub。GitHub Actions 会校验 tag、项目版本和变更记录，构建 Windows x64 自包含单文件，生成 ZIP 与 SHA-256 校验文件，验证上传资产后发布 GitHub Release。已发布版本保留为历史快照，不覆盖旧 tag 或旧资产。
 
+每个指向 `main` 的 PR 和推送都会运行“Build check”工作流：在 Windows 上以警告视为错误的方式构建 Release，并检查 `.csproj` 版本在 `CHANGELOG.md` 中有对应条目。发布新版本时，记得同时更新 `CHANGELOG.md` 底部的版本对比链接。
+
 ## 验收重点
 
 1. 把 Windows 系统时区留在美国时区，观察浮窗仍显示北京时间。

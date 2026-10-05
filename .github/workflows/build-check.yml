@@ -1,0 +1,43 @@
+name: Build check
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Verify changelog entry for project version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content '.\北京时间浮窗.csproj' -Raw
+          $projectVersion = [string]$project.Project.PropertyGroup.Version
+          $changelog = Get-Content '.\CHANGELOG.md' -Raw
+          $escapedVersion = [regex]::Escape($projectVersion)
+          if ($changelog -notmatch "(?m)^## \[$escapedVersion\]") {
+            throw "CHANGELOG.md has no section for project version $projectVersion"
+          }
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          dotnet build '.\北京时间浮窗.csproj' -c Release -p:TreatWarningsAsErrors=true
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed' }
