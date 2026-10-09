@@ -1,6 +1,8 @@
 .vs/
 /bin/
 /obj/
+**/bin/
+**/obj/
 /发布/
 *.pdb
 *.user

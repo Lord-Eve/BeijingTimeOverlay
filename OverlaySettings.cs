@@ -9,6 +9,14 @@ internal sealed class OverlaySettings
 
     public int? Top { get; set; }
 
+    public string? MonitorId { get; set; }
+
+    public bool FollowPrimaryScreen { get; set; } = true;
+
+    public double? RightOffsetDip { get; set; }
+
+    public double? BottomOffsetDip { get; set; }
+
     public bool TopMost { get; set; } = true;
 
     public bool ClickThrough { get; set; }

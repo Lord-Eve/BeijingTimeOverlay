@@ -12,12 +12,13 @@
 
 - Windows：`dotnet build .\北京时间浮窗.csproj -c Release`
 - 非 Windows 环境只能编译、不能运行：`dotnet build 北京时间浮窗.csproj -c Release -p:EnableWindowsTargeting=true -p:TreatWarningsAsErrors=true`
-- 仓库没有自动化测试项目。涉及窗口行为的改动需要在真实 Windows 桌面上按 README 的"验收重点"手工验证；在汇报时说明哪些场景没有实际验证过。
+- 自动化回归项目在 `tests/BeijingTimeOverlay.Tests`：运行 `dotnet run --project .\tests\BeijingTimeOverlay.Tests -c Release` 检查缩放、日期排版和位置计算；加 `-- --live-ui` 可在独立非输入桌面检查当前激活屏幕的 DPI 与窗口生命周期，不改变显示模式或用户设置。
+- 隔离桌面回归不能代替真实 Win+P 切屏、任务栏点击、全屏游戏/视频或重启登录验收。涉及窗口行为的改动仍需在真实 Windows 桌面上按 README 的"验收重点"手工验证；在汇报时说明哪些场景没有实际验证过。
 
 ## CI
 
-- `.github/workflows/build-check.yml`：所有指向 `main` 的 PR 和推送到 `main` 时运行，以警告视为错误的方式编译 Release，并检查 `.csproj` 版本在 `CHANGELOG.md` 中有对应段落。
-- `.github/workflows/build-windows.yml`：推送 `vMAJOR.MINOR.PATCH` tag 时构建自包含单文件、生成 ZIP 和 SHA-256，并以 `CHANGELOG.md` 对应段落作为说明发布 GitHub Release。
+- `.github/workflows/build-check.yml`：所有指向 `main` 的 PR 和推送到 `main` 时运行，以警告视为错误的方式编译 Release、执行基础回归，并检查 `.csproj` 版本在 `CHANGELOG.md` 中有对应段落。
+- `.github/workflows/build-windows.yml`：推送 `vMAJOR.MINOR.PATCH` tag 时先执行基础回归，再构建自包含单文件、生成 ZIP 和 SHA-256，并以 `CHANGELOG.md` 对应段落作为说明发布 GitHub Release。
 
 ## 发版流程
 

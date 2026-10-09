@@ -49,6 +49,12 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Run layout and position regression tests
+        shell: pwsh
+        run: |
+          dotnet run --project '.\tests\BeijingTimeOverlay.Tests\BeijingTimeOverlay.Tests.csproj' -c Release -p:TreatWarningsAsErrors=true
+          if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
+
       - name: Publish and package Windows x64 executable
         shell: pwsh
         run: |

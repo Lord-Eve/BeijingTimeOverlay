@@ -5,13 +5,15 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32;
 
 namespace BeijingTimeOverlay;
 
 internal sealed class ClockForm : Form
 {
-    private const int WindowWidth = 92;
-    private const int WindowHeight = 51;
+    private const int WmDisplayChange = 0x007E;
+    private const int WmEnterSizeMove = 0x0231;
+    private const int WmExitSizeMove = 0x0232;
     private const int FullscreenDetectionInterval = 250;
     private const int FullscreenBoundsTolerance = 8;
     private const int WsExTransparent = 0x00000020;
@@ -70,7 +72,7 @@ internal sealed class ClockForm : Form
     private readonly TimeZoneInfo _beijingTimeZone;
     private readonly System.Windows.Forms.Timer _clockTimer;
     private readonly System.Windows.Forms.Timer _fullscreenTimer;
-    private readonly System.Windows.Forms.Timer _saveTimer;
+    private readonly System.Windows.Forms.Timer _displayTimer;
     private readonly System.Windows.Forms.Timer _reassertTimer;
     private readonly WinEventDelegate _foregroundChangedCallback;
     private IntPtr _foregroundHook;
@@ -82,7 +84,11 @@ internal sealed class ClockForm : Form
     private ToolStripMenuItem _clickThroughItem = null!;
     private ToolStripMenuItem _hideWhenFullscreenItem = null!;
     private ToolStripMenuItem _startupItem = null!;
-    private readonly Font _clockFont;
+    private Font _clockFont;
+    private OverlayLayout _layout;
+    private readonly Action<OverlaySettings> _persistSettings;
+    private bool _isDragging;
+    private string _displaySignature = string.Empty;
 
     private string _timeText = string.Empty;
     private string _dateText = string.Empty;
@@ -93,9 +99,14 @@ internal sealed class ClockForm : Form
     private bool _hiddenByFullscreen;
     private bool _hiddenByUser;
 
-    public ClockForm()
+    public ClockForm() : this(SettingsStore.Load(), SettingsStore.Save)
     {
-        _settings = SettingsStore.Load();
+    }
+
+    internal ClockForm(OverlaySettings settings, Action<OverlaySettings> persistSettings)
+    {
+        _settings = settings;
+        _persistSettings = persistSettings;
         _clickThrough = _settings.ClickThrough;
         _beijingTimeZone = FindBeijingTimeZone();
 
@@ -105,11 +116,11 @@ internal sealed class ClockForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        // This is a pixel-aligned taskbar overlay. Let the OS handle the
-        // process DPI context, but do not let WinForms rescale the fixed
-        // screenshot-matching client rectangle a second time.
+        // Custom painting and window geometry share one explicit DPI scale.
+        // Disable WinForms autoscaling to avoid applying that scale twice.
         AutoScaleMode = AutoScaleMode.None;
-        ClientSize = new Size(WindowWidth, WindowHeight);
+        _layout = OverlayGeometry.LayoutForDpi(DeviceDpi);
+        ClientSize = _layout.ClientSize;
         BackColor = OverlayColor;
         ForeColor = Color.White;
         TopMost = _settings.TopMost;
@@ -120,7 +131,7 @@ internal sealed class ClockForm : Form
             ControlStyles.OptimizedDoubleBuffer,
             true);
 
-        _clockFont = new Font("Segoe UI", 10f, FontStyle.Regular, GraphicsUnit.Point);
+        _clockFont = new Font("Segoe UI", _layout.FontPixels, FontStyle.Regular, GraphicsUnit.Pixel);
 
         _menu = BuildMenu();
         ContextMenuStrip = _menu;
@@ -140,7 +151,15 @@ internal sealed class ClockForm : Form
         _clockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _clockTimer.Tick += (_, _) =>
         {
+            if (!IsHandleCreated)
+            {
+                RestoreAfterHandleLoss();
+            }
             UpdateClock();
+            if (_displaySignature != GetDisplaySignature())
+            {
+                QueueDisplayLayout();
+            }
             AttachToTaskbar();
             KeepAboveTaskbar();
         };
@@ -149,11 +168,17 @@ internal sealed class ClockForm : Form
         _fullscreenTimer = new System.Windows.Forms.Timer { Interval = FullscreenDetectionInterval };
         _fullscreenTimer.Tick += (_, _) => UpdateFullscreenVisibility();
 
-        _saveTimer = new System.Windows.Forms.Timer { Interval = 300 };
-        _saveTimer.Tick += (_, _) =>
+        // Display mode changes arrive in bursts. Reflow after Explorer and
+        // the monitor topology have had a chance to settle.
+        _displayTimer = new System.Windows.Forms.Timer { Interval = 200 };
+        _displayTimer.Tick += (_, _) =>
         {
-            _saveTimer.Stop();
-            SaveSettings();
+            _displayTimer.Stop();
+            if (!_isDragging)
+            {
+                RestoreAfterHandleLoss();
+                EnsureWindowGeometry();
+            }
         };
 
         // Explorer finishes its own z-order changes shortly after the
@@ -178,15 +203,14 @@ internal sealed class ClockForm : Form
             WinEventOutOfContext);
 
         MouseDown += HandleMouseDown;
-        LocationChanged += (_, _) =>
+        DpiChanged += (_, _) =>
         {
-            if (!_isLoadingPosition && IsHandleCreated)
-            {
-                _saveTimer.Stop();
-                _saveTimer.Start();
-            }
+            // This can be raised synchronously while Location is changing.
+            // Always perform another deferred pass instead of dropping the
+            // target monitor's notification during a display transition.
+            QueueDisplayLayout();
         };
-        DpiChanged += (_, _) => BeginInvoke((Action)(EnsureWindowGeometry));
+        SystemEvents.DisplaySettingsChanged += HandleDisplaySettingsChanged;
         Deactivate += (_, _) => KeepAboveTaskbar();
         FormClosing += HandleFormClosing;
         FormClosed += (_, _) =>
@@ -229,6 +253,7 @@ internal sealed class ClockForm : Form
                 return;
             }
 
+            QueueDisplayLayout();
             AttachToTaskbar();
             KeepAboveTaskbar();
         }));
@@ -244,7 +269,10 @@ internal sealed class ClockForm : Form
 
         // When Explorer restarts, windows owned by the old taskbar can be
         // destroyed with it. Rebuild the overlay instead of silently vanishing.
-        SynchronizationContext.Current?.Post(_ => RestoreAfterHandleLoss(), null);
+        // base.OnHandleDestroyed can uninstall WinForms' synchronization
+        // context after the last form disappears. A timer uses the UI thread's
+        // independent timer window, so recovery must not depend on that context.
+        QueueDisplayLayout();
     }
 
     protected override CreateParams CreateParams
@@ -264,6 +292,20 @@ internal sealed class ClockForm : Form
 
     protected override void WndProc(ref Message message)
     {
+        if (message.Msg == WmEnterSizeMove)
+        {
+            _isDragging = true;
+            _displayTimer.Stop();
+        }
+
+        if (message.Msg == WmExitSizeMove)
+        {
+            base.WndProc(ref message);
+            _isDragging = false;
+            RememberDraggedPosition();
+            return;
+        }
+
         if (message.Msg == WmShowClock)
         {
             _hiddenByUser = false;
@@ -276,6 +318,7 @@ internal sealed class ClockForm : Form
 
         if (message.Msg == TaskbarCreatedMessage)
         {
+            QueueDisplayLayout();
             AttachToTaskbar();
             KeepAboveTaskbar();
         }
@@ -287,6 +330,10 @@ internal sealed class ClockForm : Form
         }
 
         base.WndProc(ref message);
+        if (message.Msg == WmDisplayChange)
+        {
+            QueueDisplayLayout();
+        }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -298,10 +345,15 @@ internal sealed class ClockForm : Form
         using var format = new StringFormat(StringFormat.GenericTypographic)
         {
             FormatFlags = StringFormatFlags.NoWrap,
+            Alignment = StringAlignment.Center,
         };
 
-        e.Graphics.DrawString(_timeText, _clockFont, brush, new PointF(8f, 4f), format);
-        e.Graphics.DrawString(_dateText, _clockFont, brush, new PointF(8f, 25f), format);
+        var textWidth = ClientSize.Width - 2 * _layout.PaddingX;
+        var lineHeight = _clockFont.GetHeight(e.Graphics);
+        e.Graphics.DrawString(_timeText, _clockFont, brush,
+            new RectangleF(_layout.PaddingX, _layout.TimeTop, textWidth, lineHeight), format);
+        e.Graphics.DrawString(_dateText, _clockFont, brush,
+            new RectangleF(_layout.PaddingX, _layout.DateTop, textWidth, lineHeight), format);
     }
 
     private ContextMenuStrip BuildMenu()
@@ -528,51 +580,256 @@ internal sealed class ClockForm : Form
 
         _hiddenByFullscreen = false;
         Show();
+        EnsureWindowGeometry();
         TopMost = _settings.TopMost;
         KeepAboveTaskbar();
     }
 
     private void ApplySavedOrDefaultPosition()
     {
-        _isLoadingPosition = true;
-        try
+        if (_settings.RightOffsetDip is null || _settings.BottomOffsetDip is null)
         {
             if (_settings.Left is int left && _settings.Top is int top)
             {
-                var savedBounds = new Rectangle(left, top, Width, Height);
-                if (Screen.AllScreens.Any(screen => screen.Bounds.IntersectsWith(savedBounds)))
+                var savedBounds = new Rectangle(left, top, 92, 51);
+                var screen = Screen.AllScreens.FirstOrDefault(item => item.Bounds.Contains(savedBounds));
+                if (screen is not null &&
+                    !OverlayGeometry.IsLegacyClockCorner(savedBounds, screen.Bounds, GetScreenDpi(screen)))
                 {
-                    Location = new Point(left, top);
-                    return;
+                    var dpi = GetScreenDpi(screen);
+                    var size = OverlayGeometry.LayoutForDpi(dpi).ClientSize;
+                    var offsets = OverlayGeometry.OffsetsForPosition(new Point(left, top), size, screen.Bounds, dpi);
+                    _settings.MonitorId = GetMonitorId(screen);
+                    _settings.FollowPrimaryScreen = screen.Primary;
+                    _settings.RightOffsetDip = offsets.Right;
+                    _settings.BottomOffsetDip = offsets.Bottom;
                 }
             }
 
-            PlaceAtScreenBottomRight(Screen.PrimaryScreen ?? Screen.AllScreens.First());
+            _settings.RightOffsetDip ??= 0;
+            _settings.BottomOffsetDip ??= 0;
+        }
+
+        EnsureWindowGeometry();
+    }
+
+    private void EnsureWindowGeometry()
+    {
+        if (_isDisposed || _isDragging || _isLoadingPosition)
+        {
+            return;
+        }
+
+        var displays = GetCurrentDisplays();
+        if (displays.Length == 0)
+        {
+            // Win+P can briefly have no active monitor. Do not persist a
+            // guessed DPI or location; the normal clock tick retries later.
+            return;
+        }
+        var target = OverlayGeometry.SelectDisplay(displays, _settings.MonitorId, _settings.FollowPrimaryScreen);
+        var missingSavedMonitor = !_settings.FollowPrimaryScreen &&
+            !string.Equals(target.Id, _settings.MonitorId, StringComparison.OrdinalIgnoreCase);
+
+        _isLoadingPosition = true;
+        try
+        {
+            UpdateLayout(target.Dpi);
+            Location = OverlayGeometry.PositionFromOffsets(target.Bounds, _layout.ClientSize, target.Dpi,
+                missingSavedMonitor ? 0 : _settings.RightOffsetDip ?? 0,
+                missingSavedMonitor ? 0 : _settings.BottomOffsetDip ?? 0);
+            // Crossing a DPI boundary can synchronously apply Windows' suggested
+            // rectangle. Reapply our freshly computed size, not the old size.
+            ClientSize = _layout.ClientSize;
+            _displaySignature = GetDisplaySignature(displays);
         }
         finally
         {
             _isLoadingPosition = false;
         }
+
+        AttachToTaskbar();
+        KeepAboveTaskbar();
+        Invalidate();
+        SaveSettings();
+        UpdateFullscreenVisibility();
     }
 
-    private void EnsureWindowGeometry()
+    private void UpdateLayout(int dpi)
     {
-        if (ClientSize != new Size(WindowWidth, WindowHeight))
+        var layout = OverlayGeometry.LayoutForDpi(dpi);
+        if (_layout.Dpi != layout.Dpi)
         {
-            ClientSize = new Size(WindowWidth, WindowHeight);
+            var previousFont = _clockFont;
+            _clockFont = new Font("Segoe UI", layout.FontPixels, FontStyle.Regular, GraphicsUnit.Pixel);
+            previousFont.Dispose();
         }
 
-        if (_settings.Left is int left && _settings.Top is int top)
+        _layout = layout;
+        ClientSize = layout.ClientSize;
+        Invalidate();
+    }
+
+    private void RememberDraggedPosition()
+    {
+        var screen = Screen.FromRectangle(Bounds);
+        var dpi = GetScreenDpi(screen);
+        _isLoadingPosition = true;
+        try
         {
-            var savedBounds = new Rectangle(left, top, WindowWidth, WindowHeight);
-            if (Screen.AllScreens.Any(screen => screen.Bounds.IntersectsWith(savedBounds)))
+            UpdateLayout(dpi);
+            Location = OverlayGeometry.ClampLocation(Location, ClientSize, screen.Bounds);
+            var offsets = OverlayGeometry.OffsetsForPosition(Location, ClientSize, screen.Bounds, dpi);
+            _settings.MonitorId = GetMonitorId(screen);
+            _settings.FollowPrimaryScreen = screen.Primary;
+            _settings.RightOffsetDip = offsets.Right;
+            _settings.BottomOffsetDip = offsets.Bottom;
+        }
+        finally
+        {
+            _isLoadingPosition = false;
+        }
+
+        AttachToTaskbar();
+        KeepAboveTaskbar();
+        SaveSettings();
+    }
+
+    private void QueueDisplayLayout()
+    {
+        if (_isDisposed || _isDragging)
+        {
+            return;
+        }
+
+        _displayTimer.Stop();
+        _displayTimer.Start();
+    }
+
+    private void HandleDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        if (_isDisposed || !IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            BeginInvoke((Action)QueueDisplayLayout);
+        }
+        catch (InvalidOperationException)
+        {
+            // The window can be disposed or recreated while the event is queued.
+        }
+    }
+
+    private static string GetDisplaySignature()
+    {
+        return GetDisplaySignature(GetCurrentDisplays());
+    }
+
+    private static string GetDisplaySignature(IEnumerable<OverlayDisplay> displays)
+    {
+        return string.Join(";", displays.Select(display =>
+            $"{display.Id}:{display.IsPrimary}:{display.Bounds}:{display.Dpi}"));
+    }
+
+    private static OverlayDisplay[] GetCurrentDisplays()
+    {
+        // Screen.AllScreens can still describe the previous Win+P topology
+        // while display events are being dispatched. Query current native
+        // monitors, including DPI, rather than caching GDI display numbers.
+        var previousContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            var displays = new List<OverlayDisplay>();
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
+                (IntPtr monitor, IntPtr dc, ref NativeRect bounds, IntPtr data) =>
+                {
+                    var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+                    if (GetMonitorInfo(monitor, ref info))
+                    {
+                        var rectangle = Rectangle.FromLTRB(info.Bounds.Left, info.Bounds.Top,
+                            info.Bounds.Right, info.Bounds.Bottom);
+                        displays.Add(new OverlayDisplay(GetMonitorId(info.DeviceName), rectangle,
+                            GetMonitorDpi(monitor, rectangle), (info.Flags & 1) != 0));
+                    }
+                    return true;
+                }, IntPtr.Zero);
+            return displays.ToArray();
+        }
+        finally
+        {
+            if (previousContext != IntPtr.Zero)
             {
-                Location = new Point(left, top);
-                return;
+                SetThreadDpiAwarenessContext(previousContext);
+            }
+        }
+    }
+
+    private static int GetScreenDpi(Screen screen)
+    {
+        var center = new NativePoint
+        {
+            X = screen.Bounds.Left + screen.Bounds.Width / 2,
+            Y = screen.Bounds.Top + screen.Bounds.Height / 2,
+        };
+        var monitor = MonitorFromPoint(center, MonitorDefaultToNearest);
+        return GetMonitorDpi(monitor, screen.Bounds);
+    }
+
+    private static int GetMonitorDpi(IntPtr monitor, Rectangle bounds)
+    {
+        // GetDpiForMonitor is process-awareness-dependent. Also, an overlay
+        // whose framework owner was recreated on another monitor can report
+        // the owner's startup DPI. A tiny hidden, unowned native window on
+        // the target monitor gives GetDpiForWindow an unambiguous target.
+        var previousContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        var probe = IntPtr.Zero;
+        try
+        {
+            probe = CreateWindowEx(WsExToolWindow | WsExNoActivate, "STATIC", null,
+                0x80000000, bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2,
+                1, 1, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            var dpi = probe == IntPtr.Zero ? 0 : GetDpiForWindow(probe);
+            if (dpi > 0)
+            {
+                return (int)dpi;
+            }
+        }
+        finally
+        {
+            if (probe != IntPtr.Zero)
+            {
+                DestroyWindow(probe);
+            }
+            if (previousContext != IntPtr.Zero)
+            {
+                SetThreadDpiAwarenessContext(previousContext);
             }
         }
 
-        PlaceAtScreenBottomRight(Screen.FromPoint(Cursor.Position));
+        if (GetDpiForMonitor(monitor, 0, out var dpiX, out _) >= 0 && dpiX > 0)
+        {
+            return (int)dpiX;
+        }
+
+        GetScaleFactorForMonitor(monitor, out var scale);
+        return scale > 0 ? (int)Math.Round(96 * scale / 100d) : 96;
+    }
+
+    private static string GetMonitorId(Screen screen)
+    {
+        return GetMonitorId(screen.DeviceName);
+    }
+
+    private static string GetMonitorId(string deviceName)
+    {
+        var device = new DisplayDevice { Size = Marshal.SizeOf<DisplayDevice>() };
+        return EnumDisplayDevices(deviceName, 0, ref device, 1) &&
+               !string.IsNullOrEmpty(device.DeviceId)
+            ? device.DeviceId
+            : deviceName;
     }
 
     private void PlaceAtCurrentScreenBottomRight()
@@ -583,17 +840,11 @@ internal sealed class ClockForm : Form
 
     private void PlaceAtScreenBottomRight(Screen screen)
     {
-        _isLoadingPosition = true;
-        try
-        {
-            var bounds = screen.Bounds;
-            Location = new Point(bounds.Right - Width, bounds.Bottom - Height);
-            SaveSettings();
-        }
-        finally
-        {
-            _isLoadingPosition = false;
-        }
+        _settings.MonitorId = GetMonitorId(screen);
+        _settings.FollowPrimaryScreen = screen.Primary;
+        _settings.RightOffsetDip = 0;
+        _settings.BottomOffsetDip = 0;
+        EnsureWindowGeometry();
     }
 
     private void HandleMouseDown(object? sender, MouseEventArgs e)
@@ -618,6 +869,7 @@ internal sealed class ClockForm : Form
         {
             _hiddenByUser = false;
             Show();
+            EnsureWindowGeometry();
             TopMost = _settings.TopMost;
             KeepAboveTaskbar();
         }
@@ -785,7 +1037,7 @@ internal sealed class ClockForm : Form
 
         _settings.Left = Left;
         _settings.Top = Top;
-        SettingsStore.Save(_settings);
+        _persistSettings(_settings);
     }
 
     private void ExitApplication()
@@ -816,6 +1068,7 @@ internal sealed class ClockForm : Form
 
         SaveSettings();
         _isDisposed = true;
+        SystemEvents.DisplaySettingsChanged -= HandleDisplaySettingsChanged;
         if (_foregroundHook != IntPtr.Zero)
         {
             UnhookWinEvent(_foregroundHook);
@@ -824,11 +1077,11 @@ internal sealed class ClockForm : Form
 
         _clockTimer.Stop();
         _fullscreenTimer.Stop();
-        _saveTimer.Stop();
+        _displayTimer.Stop();
         _reassertTimer.Stop();
         _clockTimer.Dispose();
         _fullscreenTimer.Dispose();
-        _saveTimer.Dispose();
+        _displayTimer.Dispose();
         _reassertTimer.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -975,6 +1228,67 @@ internal sealed class ClockForm : Form
         public int Right;
         public int Bottom;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Bounds;
+        public NativeRect WorkingArea;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+    }
+
+    private delegate bool MonitorEnumDelegate(IntPtr monitor, IntPtr dc, ref NativeRect bounds, IntPtr data);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, MonitorEnumDelegate callback, IntPtr data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateWindowEx(int extendedStyle, string className, string? name,
+        uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr window);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DisplayDevice
+    {
+        public int Size;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public uint StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceId;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetScaleFactorForMonitor(IntPtr monitor, out int scale);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplayDevices(string deviceName, uint index, ref DisplayDevice device, uint flags);
 
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(

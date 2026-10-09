@@ -41,3 +41,9 @@ jobs:
         run: |
           dotnet build '.\北京时间浮窗.csproj' -c Release -p:TreatWarningsAsErrors=true
           if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed' }
+
+      - name: Run layout and position regression tests
+        shell: pwsh
+        run: |
+          dotnet run --project '.\tests\BeijingTimeOverlay.Tests\BeijingTimeOverlay.Tests.csproj' -c Release -p:TreatWarningsAsErrors=true
+          if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }

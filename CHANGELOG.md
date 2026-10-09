@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-08
+
+### 修复
+
+- 修复不同缩放显示器间切换后字体、行距与窗口尺寸失配、日期被裁切的问题；125% 和 150% 等缩放统一按逻辑尺寸计算，日期完整居中显示。
+- 修复 Win+P 切换显示模式、改变主屏或插拔显示器后仍沿用旧绝对坐标的问题；默认位置跟随主屏右下角，手动拖动的位置按显示器标识和相对边距保存，目标屏断开时回退主屏。
+- 旧版位置设置自动迁移；完整检查窗口边界，避免仅因部分相交就保留被裁掉的位置。
+- 切屏时直接读取当前原生显示器及目标屏 DPI，定时检查也包含缩放变化；避免显示器编号交换、旧拓扑缓存或窗口重建后继续沿用另一块屏幕的比例。
+- 任务栏重建后使用 UI 定时器恢复浮窗，不再依赖可能已被 WinForms 移除的同步上下文。
+- 保留原有 10pt 基础字号，不再用缩小文字的方式避免裁切；适当增加日期横向余量，保持与原生任务栏时钟接近的视觉大小。
+
+### 维护
+
+- 新增缩放、日期排版、显示器位置和窗口生命周期回归测试；主分支构建与版本发布前自动执行基础回归。
+
 ## [1.1.1] - 2026-10-02
 
 ### 修复
@@ -41,7 +56,8 @@
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
 
-[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/releases/tag/v1.0.0
