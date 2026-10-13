@@ -34,7 +34,8 @@
 - 本仓库的 PR 由 Codex（`chatgpt-codex-connector[bot]`）自动审查。
 - **Codex 有意见时留 review 评论；没有意见时只在 PR 上点 👍（`+1` reaction），不留评论。** 这个 👍 就表示"已审查，无意见"。
 - Codex 审查进行中时会在 PR 上点 👀（`eyes` reaction）。只有 👀、还没有 👍 也没有新评论，说明它还在审，不要当成已审完。
-- reaction 不会产生 PR 评论或 review 事件。跟进 PR 时，在 CI 通过后和每次检查 PR 状态时主动查询：`gh api repos/Lord-Eve/BeijingTimeOverlay/issues/<PR 号>/reactions`。
+- Codex 还会在 PR 上发一条 "Codex Review Summary" 评论（含 `<!-- codex-pull-request-review-summary -->` 标记），用表格显示审查状态，并原地更新：开始时为 "Running"，结束时改为 "Completed"。这条评论的创建和编辑会产生 PR 评论事件，订阅 PR 的助手能借此及时得知审查结束；看到 "Completed" 后再查询 reaction 确认有没有 👍。
+- reaction 本身不会产生 PR 评论或 review 事件。跟进 PR 时，在 CI 通过后、Summary 变为 "Completed" 时和每次检查 PR 状态时主动查询：`gh api repos/Lord-Eve/BeijingTimeOverlay/issues/<PR 号>/reactions`。
 - 看到 Codex 的 👍、CI 通过且没有合并冲突、没有未处理的 review 讨论时，直接告诉用户可以合并，不要再说"等 Codex 审查"。
 - 合并由仓库所有者决定，AI 助手不要自行合并。
 
