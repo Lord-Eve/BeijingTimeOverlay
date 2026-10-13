@@ -17,6 +17,8 @@ internal sealed class ClockForm : Form
     private const int FullscreenDetectionInterval = 250;
     private const int FullscreenBoundsTolerance = 8;
     private const int WsExTransparent = 0x00000020;
+    private const int WsExLayered = 0x00080000;
+    private const uint LwaAlpha = 0x00000002;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
     private const int WmNcHitTest = 0x0084;
@@ -242,6 +244,13 @@ internal sealed class ClockForm : Form
     {
         base.OnHandleCreated(e);
 
+        // A layered window stays invisible until its attributes are set, so
+        // make it fully opaque before the recreated window is shown.
+        if (_clickThrough)
+        {
+            SetLayeredWindowAttributes(Handle, 0, 255, LwaAlpha);
+        }
+
         // Form.CreateHandle() is still running here: with ShowInTaskbar=false
         // WinForms afterwards points the native owner at its hidden taskbar
         // owner window, so attach once handle creation has finished.
@@ -283,7 +292,10 @@ internal sealed class ClockForm : Form
             parameters.ExStyle |= WsExToolWindow | WsExNoActivate;
             if (_clickThrough)
             {
-                parameters.ExStyle |= WsExTransparent;
+                // Windows only passes clicks through to other processes' windows
+                // (such as the taskbar clock) when the window is both layered and
+                // transparent; HTTRANSPARENT alone only reaches same-thread windows.
+                parameters.ExStyle |= WsExLayered | WsExTransparent;
             }
 
             return parameters;
@@ -1190,6 +1202,10 @@ internal sealed class ClockForm : Form
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr handle, uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetLayeredWindowAttributes(IntPtr handle, uint colorKey, byte alpha, uint flags);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern IntPtr SetWindowLongPtr64(IntPtr handle, int index, IntPtr value);
