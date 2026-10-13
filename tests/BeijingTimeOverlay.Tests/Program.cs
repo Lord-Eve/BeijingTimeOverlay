@@ -200,6 +200,13 @@ internal static class Program
                 Check(clock.Location == custom, "Manual relative position survives reflow");
                 Call(clock, "SetClickThrough", true);
                 Pump(500);
+                // Clicks only reach other processes' windows (the taskbar clock)
+                // when the window is both layered and transparent.
+                var clickThroughStyle = GetWindowLong(clock.Handle, -20);
+                Check((clickThroughStyle & 0x00080020) == 0x00080020, "Click-through window is layered and transparent");
+                Check(GetLayeredWindowAttributes(clock.Handle, out _, out var clickThroughAlpha, out var layeredFlags) &&
+                      (layeredFlags & 0x2) != 0 && clickThroughAlpha == 255,
+                    "Click-through window stays fully opaque");
                 Console.WriteLine($"Recreate {screen.DeviceName}: native DPI={GetDpiForWindow(clock.Handle)}, WinForms DPI={clock.DeviceDpi}, client={clock.ClientSize}, bounds={clock.Bounds}");
                 // A recreated WinForms window may retain its framework owner's
                 // startup DPI. Layout is intentionally based on the monitor's
@@ -215,6 +222,7 @@ internal static class Program
                 Check(screen.Bounds.Contains(clock.Bounds), "Recreated window stays on its selected monitor");
                 Call(clock, "SetClickThrough", false);
                 Pump(300);
+                Check((GetWindowLong(clock.Handle, -20) & 0x00080020) == 0, "Disabling click-through restores normal hit testing");
 
                 // A WM_DISPLAYCHANGE must queue a reflow, not blindly accept the
                 // stale location after a primary/display-mode change.
@@ -416,6 +424,9 @@ internal static class Program
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindow(string? cls, string title);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder title, int size);
     [DllImport("user32.dll")] private static extern bool DestroyWindow(IntPtr window);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")]
+    private static extern bool GetLayeredWindowAttributes(IntPtr window, out uint colorKey, out byte alpha, out uint flags);
     private delegate IntPtr WindowProcedure(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr DefWindowProc(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
