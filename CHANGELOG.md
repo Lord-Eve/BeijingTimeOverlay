@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-13
+
 ### 修复
 
 - 修复开启“鼠标穿透”后仍无法点击浮窗下方任务栏内容（例如系统时钟和日历面板）的问题：穿透时浮窗改为分层透明窗口，点击会交给下方其他程序的窗口，外观不变。
@@ -60,7 +62,8 @@
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
 
-[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.0.0...v1.1.0
