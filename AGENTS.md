@@ -6,6 +6,8 @@
 
 - Windows 桌面北京时间浮窗，C# WinForms，目标框架 `net8.0-windows`。
 - 主要逻辑在 `ClockForm.cs`（窗口、置顶、全屏检测、托盘菜单），入口在 `Program.cs`，设置读写在 `OverlaySettings.cs`，开机启动在 `StartupManager.cs`。
+- 不依赖窗口句柄的纯计算放在 `OverlayGeometry.cs`：按 DPI 计算窗口尺寸、字号和行距（`LayoutForDpi`），选择显示器（`SelectDisplay`），在相对边距和绝对坐标之间换算并保证整个窗口可见，以及旧版位置迁移。尺寸始终从 96 DPI 的逻辑常量换算，不要基于已缩放的值再缩放。
+- 回归测试在 `tests/BeijingTimeOverlay.Tests/Program.cs`（控制台程序，无测试框架）。修改 `OverlayGeometry.cs`、字号或排版常量、显示器选择或位置保存逻辑时，同步更新或新增对应断言，并确保测试通过；新的纯计算逻辑优先放进 `OverlayGeometry.cs`，方便在不创建窗口的情况下测试。
 - 大量使用 Win32 互操作（`SetWindowPos`、任务栏 owner、`SetWinEventHook` 等）。改动置顶或窗口生命周期时，注意句柄重建（例如切换鼠标穿透会触发 `RecreateHandle`）和 WinForms 自己对原生 owner 的修改。
 
 ## 构建与验证
