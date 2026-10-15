@@ -55,29 +55,41 @@ jobs:
           dotnet run --project '.\tests\BeijingTimeOverlay.Tests\BeijingTimeOverlay.Tests.csproj' -c Release -p:TreatWarningsAsErrors=true
           if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
 
-      - name: Publish and package Windows x64 executable
+      - name: Publish and package Windows x64 executables
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
-          New-Item -ItemType Directory -Path '.\dist\win-x64', '.\release' -Force | Out-Null
+          New-Item -ItemType Directory -Path '.\release' -Force | Out-Null
 
-          dotnet publish '.\北京时间浮窗.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o '.\dist\win-x64'
-          if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
+          # Self-contained runs anywhere; the framework-dependent build is tiny but needs the .NET 8 Desktop Runtime.
+          # Use -p:SelfContained rather than --self-contained: newer SDKs ignore "--self-contained false".
+          $variants = @(
+            @{ Suffix = ''; Properties = @('-p:SelfContained=true', '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:EnableCompressionInSingleFile=true') },
+            @{ Suffix = '-requires-dotnet8'; Properties = @('-p:SelfContained=false') }
+          )
 
-          $files = @(Get-ChildItem '.\dist\win-x64' -File)
-          if ($files.Count -ne 1 -or $files[0].Name -ne 'BeijingTimeOverlay.exe') {
-            throw "Unexpected publish output: $($files.Name -join ', ')"
+          $assets = @()
+          foreach ($variant in $variants) {
+            $distPath = ".\dist\win-x64$($variant.Suffix)"
+            dotnet publish '.\北京时间浮窗.csproj' -c Release -r win-x64 -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false @($variant.Properties) -o $distPath
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for win-x64$($variant.Suffix)" }
+
+            $files = @(Get-ChildItem $distPath -File)
+            if ($files.Count -ne 1 -or $files[0].Name -ne 'BeijingTimeOverlay.exe') {
+              throw "Unexpected publish output for win-x64$($variant.Suffix): $($files.Name -join ', ')"
+            }
+            Write-Host ("win-x64{0}: {1:N2} MB" -f $variant.Suffix, ($files[0].Length / 1MB))
+
+            $zipName = "BeijingTimeOverlay-$tag-win-x64$($variant.Suffix).zip"
+            $zipPath = ".\release\$zipName"
+            Compress-Archive -LiteralPath $files[0].FullName -DestinationPath $zipPath -CompressionLevel Optimal
+
+            $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText(".\release\$zipName.sha256", "$hash  $zipName`n", [Text.ASCIIEncoding]::new())
+            $assets += "$zipName=$hash"
           }
 
-          $zipName = "BeijingTimeOverlay-$tag-win-x64.zip"
-          $checksumName = "$zipName.sha256"
-          $zipPath = ".\release\$zipName"
-          $checksumPath = ".\release\$checksumName"
-          Compress-Archive -LiteralPath '.\dist\win-x64\BeijingTimeOverlay.exe' -DestinationPath $zipPath -CompressionLevel Optimal
-
-          $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          [IO.File]::WriteAllText($checksumPath, "$hash  $zipName`n", [Text.ASCIIEncoding]::new())
-          [IO.File]::AppendAllText($env:GITHUB_ENV, "RELEASE_ZIP_NAME=$zipName`nRELEASE_CHECKSUM_NAME=$checksumName`nRELEASE_ZIP_SHA256=$hash`n", [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "RELEASE_ZIPS=$($assets -join ';')`n", [Text.UTF8Encoding]::new($false))
 
       - name: Create draft release and verify uploaded assets
         shell: pwsh
@@ -85,10 +97,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $zipPath = ".\release\$env:RELEASE_ZIP_NAME"
-          $checksumPath = ".\release\$env:RELEASE_CHECKSUM_NAME"
+          $zipHashes = @{}
+          foreach ($entry in $env:RELEASE_ZIPS -split ';') {
+            $parts = $entry -split '=', 2
+            $zipHashes[$parts[0]] = $parts[1]
+          }
 
-          gh release create $tag $zipPath $checksumPath --verify-tag --draft --title "北京时间浮窗 $tag（Windows x64）" --notes-file $env:RELEASE_NOTES_PATH
+          $uploadPaths = @()
+          foreach ($zipName in $zipHashes.Keys) {
+            $uploadPaths += ".\release\$zipName", ".\release\$zipName.sha256"
+          }
+
+          gh release create $tag @uploadPaths --verify-tag --draft --title "北京时间浮窗 $tag（Windows x64）" --notes-file $env:RELEASE_NOTES_PATH
           if ($LASTEXITCODE -ne 0) { throw 'Failed to create draft GitHub release or upload assets' }
 
           $assetLines = gh release view $tag --json assets --jq '.assets[] | [.name, .digest] | @tsv'
@@ -99,14 +119,16 @@ jobs:
             if ($parts.Count -eq 2) { $assetDigests[$parts[0]] = $parts[1] }
           }
 
-          foreach ($name in @($env:RELEASE_ZIP_NAME, $env:RELEASE_CHECKSUM_NAME)) {
-            if (-not $assetDigests.ContainsKey($name)) {
-              throw "Release is missing asset $name"
+          foreach ($zipName in $zipHashes.Keys) {
+            foreach ($name in @($zipName, "$zipName.sha256")) {
+              if (-not $assetDigests.ContainsKey($name)) {
+                throw "Release is missing asset $name"
+              }
             }
-          }
 
-          if ($assetDigests[$env:RELEASE_ZIP_NAME] -and $assetDigests[$env:RELEASE_ZIP_NAME] -ne "sha256:$env:RELEASE_ZIP_SHA256") {
-            throw 'GitHub-reported ZIP digest does not match the locally computed SHA-256'
+            if ($assetDigests[$zipName] -and $assetDigests[$zipName] -ne "sha256:$($zipHashes[$zipName])") {
+              throw "GitHub-reported digest of $zipName does not match the locally computed SHA-256"
+            }
           }
 
           gh release edit $tag --verify-tag --draft=false --latest

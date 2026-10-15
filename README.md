@@ -17,15 +17,16 @@
 
 ## 运行
 
-日常使用请从 [GitHub Releases](https://github.com/Lord-Eve/BeijingTimeOverlay/releases) 下载并解压 Windows 程序包，然后双击 `BeijingTimeOverlay.exe`；不需要打开 PowerShell。程序目前没有安装程序或代码签名，Windows SmartScreen 可能显示提示；可用 Release 附带的 SHA-256 文件核对下载包。
+日常使用请从 [GitHub Releases](https://github.com/Lord-Eve/BeijingTimeOverlay/releases) 下载并解压 Windows 程序包，然后双击 `BeijingTimeOverlay.exe`；不需要打开 PowerShell。每个版本提供两个程序包：
 
-如果使用源码，需要 Windows 和 .NET 8 SDK。先在项目目录构建一次：
+- `BeijingTimeOverlay-vX.Y.Z-win-x64.zip`：自带 .NET 运行时，任何 Windows 10/11 x64 解压即用，exe 约 68 MB。
+- `BeijingTimeOverlay-vX.Y.Z-win-x64-requires-dotnet8.zip`：exe 只有约 0.2 MB，但需要先安装 [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)（Windows Desktop Runtime x64）；未安装时 Windows 会提示下载。
 
-```powershell
-dotnet build .\北京时间浮窗.csproj -c Release
-```
+程序目前没有安装程序或代码签名，Windows SmartScreen 可能显示提示；可用 Release 附带的 SHA-256 文件核对下载包。
 
-之后双击 `启动北京时间浮窗.cmd` 即可直接启动 GUI 程序，不需要保持 PowerShell 或命令提示符窗口。脚本按顺序查找 Release 构建目录、项目根目录和 `发布` 目录中的程序；如果都不存在，会提示先构建或下载 Release 程序包。
+如果使用源码，需要 Windows 和 .NET 8 SDK。双击 `发布到本地.cmd` 即可：脚本会运行回归测试，把依赖框架的单文件程序发布到 `发布\BeijingTimeOverlay.exe`，结束正在运行的旧浮窗并启动新版本；如果已经开启开机启动，启动项也会改为指向这个程序。修改代码后再双击一次就能更新，不需要手动输入命令。
+
+之后可以双击 `启动北京时间浮窗.cmd` 启动程序，不需要保持 PowerShell 或命令提示符窗口。脚本按顺序查找 `发布` 目录、项目根目录和 Release 构建目录中的程序；如果都不存在，会提示先运行 `发布到本地.cmd` 或下载 Release 程序包。
 再次启动不会创建第二个实例，而是唤醒并恢复已有浮窗。
 
 首次运行后，右键托盘图标可以管理窗口。窗口位置和开关保存在：
@@ -38,7 +39,7 @@ dotnet build .\北京时间浮窗.csproj -c Release
 
 无需额外测试框架，运行 `dotnet run --project .\tests\BeijingTimeOverlay.Tests -c Release` 可执行缩放、文字排版及显示器位置回归测试。加上 `-- --live-ui` 可在独立非输入桌面执行实际双屏 DPI 与窗口生命周期检查，不改变显示模式或用户设置。
 
-更新 `.csproj` 中的版本号和 `CHANGELOG.md` 后，将对应的 `vMAJOR.MINOR.PATCH` tag 推送到 GitHub。GitHub Actions 会校验 tag、项目版本和变更记录，构建 Windows x64 自包含单文件，生成 ZIP 与 SHA-256 校验文件，验证上传资产后发布 GitHub Release。已发布版本保留为历史快照，不覆盖旧 tag 或旧资产。
+更新 `.csproj` 中的版本号和 `CHANGELOG.md` 后，将对应的 `vMAJOR.MINOR.PATCH` tag 推送到 GitHub。GitHub Actions 会校验 tag、项目版本和变更记录，构建 Windows x64 自包含（开启压缩）和依赖框架两种单文件程序，分别生成 ZIP 与 SHA-256 校验文件，验证上传资产后发布 GitHub Release。已发布版本保留为历史快照，不覆盖旧 tag 或旧资产。
 
 每个指向 `main` 的 PR 和推送都会运行“Build check”工作流：在 Windows 上以警告视为错误的方式构建 Release，执行基础回归测试，并检查 `.csproj` 版本在 `CHANGELOG.md` 中有对应条目。版本发布前也执行基础回归；真实多屏、Win+P 和窗口外观仍需人工验收。发布新版本时，记得同时更新 `CHANGELOG.md` 底部的版本对比链接。
 
