@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-10-15
+
+### 修复
+
+- 修复关机、注销或在任务管理器中结束任务时，浮窗把关闭请求当作“隐藏到托盘”处理，导致 Windows 提示它在阻止关机的问题；现在会保存设置后直接退出。
+
 ### 变更
 
 - Release 改为提供两个程序包：`BeijingTimeOverlay-vX.Y.Z-win-x64.zip` 自带运行时，解压即用，开启单文件压缩后 exe 从约 161 MB 降到约 68 MB；新增 `BeijingTimeOverlay-vX.Y.Z-win-x64-requires-dotnet8.zip`，exe 只有约 0.2 MB，但需要已安装 .NET 8 桌面运行时。
@@ -11,7 +17,7 @@
 ### 维护
 
 - 新增 `发布到本地.cmd`：双击即可运行回归测试，把依赖框架的单文件程序发布到 `发布` 目录，替换正在运行的浮窗并重新启动；已开启开机启动时，启动项会改为指向 `发布` 目录中的程序。
-- `启动北京时间浮窗.cmd` 改为优先启动 `发布` 目录中的程序，并修正中文路径和提示在中文系统上读取错误的问题。
+- `启动北京时间浮窗.cmd` 改为优先启动 `发布` 目录中的程序；脚本内容改为纯 ASCII，避免中文系统按 GBK 解析 UTF-8 脚本时出错。
 
 ## [1.1.3] - 2026-10-13
 
@@ -71,7 +77,8 @@
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
 
-[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.0...v1.1.1

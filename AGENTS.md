@@ -16,6 +16,7 @@
 - 非 Windows 环境只能编译、不能运行：`dotnet build 北京时间浮窗.csproj -c Release -p:EnableWindowsTargeting=true -p:TreatWarningsAsErrors=true`
 - 自动化回归项目在 `tests/BeijingTimeOverlay.Tests`：运行 `dotnet run --project .\tests\BeijingTimeOverlay.Tests -c Release` 检查缩放、日期排版和位置计算；加 `-- --live-ui` 可在独立非输入桌面检查当前激活屏幕的 DPI 与窗口生命周期，不改变显示模式或用户设置。
 - 本地部署：`发布到本地.cmd`（调用 `tools/publish-local.ps1`）运行回归测试，把依赖框架的单文件 exe 发布到被 git 忽略的 `发布\`，结束旧进程后启动新版本，并在已开启开机启动时把启动项指向它。改完代码需要让用户用上新版本时运行它，不要手动复制构建产物。
+- `.cmd` 脚本只写 ASCII 内容、CRLF 换行：中文 Windows 的 cmd 按 GBK 解析脚本，UTF-8 中文会让行解析错位，`chcp 65001` 补救不了。中文路径在运行时由 `%~dp0` 等展开得到；需要中文输出或复杂逻辑时写成带 BOM 的 `.ps1`，再由 ASCII 的 `.cmd` 调用。
 - `dotnet publish` 用 `-p:SelfContained=true|false` 指定是否自包含，不要用 `--self-contained false`：.NET 10 SDK 会忽略其中的 `false`，照样打包运行时。
 - 隔离桌面回归不能代替真实 Win+P 切屏、任务栏点击、全屏游戏/视频或重启登录验收。涉及窗口行为的改动仍需在真实 Windows 桌面上按 README 的"验收重点"手工验证；在汇报时说明哪些场景没有实际验证过。
 

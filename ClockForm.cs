@@ -1060,6 +1060,15 @@ internal sealed class ClockForm : Form
 
     private void HandleFormClosing(object? sender, FormClosingEventArgs e)
     {
+        // Shutdown, sign-out and Task Manager must be allowed to end the
+        // process; cancelling here makes Windows report that the overlay
+        // is blocking shutdown. Settings are saved in DisposeResources.
+        if (e.CloseReason is CloseReason.WindowsShutDown or CloseReason.TaskManagerClosing)
+        {
+            // Also stops OnHandleDestroyed from rebuilding the window.
+            _allowClose = true;
+        }
+
         if (_allowClose)
         {
             return;
