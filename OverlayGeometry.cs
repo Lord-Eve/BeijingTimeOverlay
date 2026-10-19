@@ -12,6 +12,26 @@ internal readonly record struct OverlayDisplay(string Id, Rectangle Bounds, int 
 
 internal static class OverlayGeometry
 {
+    public static Size PacificCardSize(int dpi)
+    {
+        var scale = (dpi > 0 ? dpi : 96) / 96d;
+        return new Size((int)Math.Round(208 * scale), (int)Math.Round(106 * scale));
+    }
+
+    public static Rectangle PacificCardBounds(Rectangle anchor, Rectangle workArea, int dpi)
+    {
+        var desired = PacificCardSize(dpi);
+        var size = new Size(Math.Min(desired.Width, workArea.Width), Math.Min(desired.Height, workArea.Height));
+        var gap = (int)Math.Round(8 * (dpi > 0 ? dpi : 96) / 96d);
+        var y = anchor.Top - gap - size.Height;
+        if (y < workArea.Top)
+        {
+            y = anchor.Bottom + gap;
+        }
+
+        return new Rectangle(ClampLocation(new Point(anchor.Right - size.Width, y), size, workArea), size);
+    }
+
     // 96-DPI logical pixels. Scale from these constants, never from the
     // previously scaled size, so repeated monitor changes cannot compound.
     public static OverlayLayout LayoutForDpi(int dpi)

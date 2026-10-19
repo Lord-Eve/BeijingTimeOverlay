@@ -24,6 +24,7 @@ internal static class Program
 
             TestLayouts();
             TestPositions();
+            TestPacificPreview();
 
             Console.WriteLine($"PASS: {_assertions} assertions; live-ui={liveUi}");
             return 0;
@@ -89,6 +90,64 @@ internal static class Program
             Check(OverlayGeometry.LayoutForDpi(144).FontPixels == 20, "Repeated font drift");
         }
         Check(OverlayGeometry.LayoutForDpi(0).Dpi == 96, "Invalid DPI fallback");
+    }
+
+    private static void TestPacificPreview()
+    {
+        var state = new HoverPreviewState();
+        Check(!state.Update(true, 1000), "Hover entry waits");
+        Check(!state.Update(true, 1299), "Brief pass does not show preview");
+        Check(state.Update(true, 1300), "Preview shows after 300ms");
+        Check(state.Update(true, 2000), "Stationary hover remains visible");
+        Check(!state.Update(false, 2001), "Leave or blocked interaction hides immediately");
+        Check(!state.Update(true, 2100), "Reentry starts a fresh delay");
+        state.Reset();
+        Check(!state.Update(true, 2400), "Explicit reset forgets old hover");
+        Check(new OverlaySettings().ShowPacificTimeOnHover, "Hover preview defaults on");
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<OverlaySettings>("{\"TopMost\":true}")!;
+        Check(legacy.ShowPacificTimeOnHover, "Existing settings acquire new default");
+        var disabled = System.Text.Json.JsonSerializer.Deserialize<OverlaySettings>("{\"ShowPacificTimeOnHover\":false}")!;
+        Check(!disabled.ShowPacificTimeOnHover, "Explicit disabled preference survives deserialization");
+
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+        void Time(string utc, string time, string date, string abbreviation)
+        {
+            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone);
+            Check(actual == new PacificTimeText(time, date, abbreviation), $"Pacific date/DST: {utc} => {actual}");
+        }
+        Time("2026-03-08T09:59:59Z", "01:59:59", "2026/3/8", "PST");
+        Time("2026-03-08T10:00:00Z", "03:00:00", "2026/3/8", "PDT");
+        Time("2026-11-01T08:59:59Z", "01:59:59", "2026/11/1", "PDT");
+        Time("2026-11-01T09:00:00Z", "01:00:00", "2026/11/1", "PST");
+        Time("2027-01-01T00:30:00Z", "16:30:00", "2026/12/31", "PST");
+        Time("2026-07-01T07:00:00Z", "00:00:00", "2026/7/1", "PDT");
+        foreach (var dpi in new[] { 96, 120, 144, 168, 192, 240, 288 })
+        {
+            foreach (var work in new[] { new Rectangle(0, 0, 2560, 1380), new Rectangle(-2560, -1600, 2560, 1528) })
+            {
+                var anchorSize = OverlayGeometry.LayoutForDpi(dpi).ClientSize;
+                foreach (var location in new[] { work.Location, new Point(work.Right - anchorSize.Width, work.Bottom),
+                             new Point(work.Right - anchorSize.Width, work.Top), new Point(work.Left, work.Bottom) })
+                {
+                    var anchor = new Rectangle(location, anchorSize);
+                    var card = OverlayGeometry.PacificCardBounds(anchor, work, dpi);
+                    Check(work.Contains(card), $"Preview fully in work area, DPI {dpi}");
+                    Check(!card.IntersectsWith(anchor), "Preview does not cover the clock");
+                    Check(card.Size == OverlayGeometry.PacificCardSize(dpi), "Preview scales once from logical size");
+                }
+            }
+            var size = OverlayGeometry.PacificCardSize(dpi);
+            using var bitmap = new Bitmap(size.Width, size.Height);
+            using var graphics = Graphics.FromImage(bitmap);
+            using var label = new Font("Segoe UI", 12 * dpi / 96f, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var timeFont = new Font("Segoe UI", 26 * dpi / 96f, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var format = new StringFormat(StringFormat.GenericTypographic) { FormatFlags = StringFormatFlags.NoWrap };
+            var width = bitmap.Width - 28 * dpi / 96f;
+            Check(graphics.MeasureString("太平洋时间 · 洛杉矶", label, PointF.Empty, format).Width <= width, "Preview title fits");
+            Check(graphics.MeasureString("2026/12/31  ·  PST", label, PointF.Empty, format).Width <= width, "Preview date and zone fit");
+            Check(graphics.MeasureString("23:59:59", timeFont, PointF.Empty, format).Width <= width, "Preview time fits");
+            Check(78 * dpi / 96f + label.GetHeight(graphics) < bitmap.Height - 2, "Preview footer does not clip");
+        }
     }
 
     private static void TestPositions()
@@ -161,6 +220,7 @@ internal static class Program
             using var clock = new ClockForm(settings, _ => writes++);
             clock.Show();
             Pump(400);
+            TestLivePreview(clock, settings);
             foreach (var screen in Screen.AllScreens)
             {
                 Call(clock, "PlaceAtScreenBottomRight", screen);
@@ -171,6 +231,7 @@ internal static class Program
                 Console.WriteLine($"Display {screen.DeviceName}: {screen.Bounds.Width}x{screen.Bounds.Height}, DPI={dpi}, clock={clock.ClientSize}");
                 Check(screen.Bounds.Contains(clock.Bounds), "Live full visibility");
                 Check(clock.Right == screen.Bounds.Right && clock.Bottom == screen.Bounds.Bottom, "Live bottom-right placement");
+                TestLivePreview(clock, settings);
                 using var image = new Bitmap(clock.Width, clock.Height);
                 typeof(ClockForm).GetField("_dateText", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(clock, "2026/12/31");
                 clock.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
@@ -262,6 +323,7 @@ internal static class Program
                 Check(GetWindow(clock.Handle, 4) == taskbar, "Restored window attaches to replacement taskbar");
                 Check(clock.ClientSize == OverlayGeometry.LayoutForDpi(MonitorDpi(clock.Handle)).ClientSize,
                     "Owner restoration retains correct screen geometry");
+                TestLivePreview(clock, settings);
                 // Exercise both directions while topmost ownership is active,
                 // including the framework-owner DPI retained after recreation.
                 foreach (var screen in Screen.AllScreens.Reverse().Concat(Screen.AllScreens))
@@ -294,6 +356,94 @@ internal static class Program
     }
 
     private static readonly WindowProcedure TestWindowProcedure = DefWindowProc;
+
+    private static void TestLivePreview(ClockForm clock, OverlaySettings settings)
+    {
+        var timer = (System.Windows.Forms.Timer)typeof(ClockForm).GetField("_hoverTimer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(clock)!;
+        PacificTimeCard? Card() => (PacificTimeCard?)typeof(ClockForm).GetField("_pacificCard", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(clock);
+        void ShowPreview()
+        {
+            timer.Stop(); // Simulated input must not move the user's real cursor.
+            clock.UpdatePacificHover(false, 0);
+            clock.UpdatePacificHover(true, 1000);
+            Check(Card()?.Visible != true, "Live card remains hidden before delay");
+            clock.UpdatePacificHover(true, 1300);
+            Check(Card()?.Visible == true, "Live card appears after delay");
+        }
+        var clockSize = clock.ClientSize;
+        var foreground = GetForegroundWindow();
+        ShowPreview();
+        var card = Card()!;
+        Check(GetForegroundWindow() == foreground, "Preview does not steal foreground focus");
+        Check(GetWindow(card.Handle, 4) == clock.Handle, "Preview is owned by clock");
+        Check((GetWindowLong(card.Handle, -20) & 0x080800A0) == 0x080800A0, "Preview is nonactivating, layered and click-through");
+        Check(GetLayeredWindowAttributes(card.Handle, out _, out var alpha, out _) && alpha == 255, "Preview is actually opaque");
+        Check(!card.ShowInTaskbar && Screen.FromHandle(clock.Handle).WorkingArea.Contains(card.Bounds), "Preview stays in work area");
+        Check(clock.ClientSize == clockSize, "Preview leaves main clock geometry unchanged");
+        Check(card.ClientSize == OverlayGeometry.PacificCardSize(MonitorDpi(clock.Handle)), "Live preview follows anchor monitor DPI");
+        using (var image = new Bitmap(card.Width, card.Height))
+        {
+            card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"));
+            card.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+            var captureDirectory = Environment.GetEnvironmentVariable("BJT_PREVIEW_CAPTURE_DIR");
+            if (!string.IsNullOrEmpty(captureDirectory))
+            {
+                Directory.CreateDirectory(captureDirectory);
+                image.Save(Path.Combine(captureDirectory, $"pacific-card-{MonitorDpi(clock.Handle)}dpi.png"));
+            }
+            var textPixels = 0;
+            for (var y = image.Height * 2 / 3; y < image.Height - 3; y++)
+                for (var x = 3; x < image.Width - 3; x++)
+                {
+                    var pixel = image.GetPixel(x, y);
+                    if (pixel.R > 140 && pixel.G > 140 && pixel.B > 140) textPixels++;
+                }
+            Check(textPixels > 30, "Actual preview paints the footer");
+        }
+        clock.UpdatePacificHover(false, 1301);
+        Check(!card.Visible, "Pointer departure hides live card");
+        ShowPreview();
+        Call(clock, "SetClickThrough", true);
+        Pump(350);
+        Check(!card.Visible, "Handle recreation dismisses preview");
+        ShowPreview();
+        Call(clock, "ToggleVisibility");
+        Check(!card.Visible && !timer.Enabled, "Hidden clock stops preview and polling");
+        Call(clock, "ToggleVisibility");
+        Pump(350);
+        ShowPreview();
+        Call(clock, "SetPacificHover", false);
+        Check(!card.Visible && !timer.Enabled && !settings.ShowPacificTimeOnHover, "Switch disables preview and polling");
+        Call(clock, "SetPacificHover", true);
+        Pump(350);
+        ShowPreview();
+        var menu = (ContextMenuStrip)typeof(ClockForm).GetField("_menu", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(clock)!;
+        menu.Show(clock, Point.Empty);
+        Check(!card.Visible, "Opening context menu hides preview");
+        clock.UpdatePacificHover(true, 3000);
+        clock.UpdatePacificHover(true, 3400);
+        Check(!card.Visible, "Menu blocks preview from reappearing");
+        menu.Close();
+        foreach (var flag in new[] { "_hiddenByFullscreen", "_hiddenByUser" })
+        {
+            var field = typeof(ClockForm).GetField(flag, BindingFlags.Instance | BindingFlags.NonPublic)!;
+            field.SetValue(clock, true);
+            clock.UpdatePacificHover(true, 4000);
+            clock.UpdatePacificHover(true, 4400);
+            Check(!card.Visible, $"{flag} blocks preview");
+            field.SetValue(clock, false);
+        }
+        Call(clock, "SetClickThrough", false);
+        Pump(350);
+        ShowPreview();
+        SendMessage(clock.Handle, 0x0231, IntPtr.Zero, IntPtr.Zero);
+        clock.UpdatePacificHover(true, 3000);
+        clock.UpdatePacificHover(true, 3400);
+        Check(!card.Visible, "Dragging suppresses preview");
+        SendMessage(clock.Handle, 0x0232, IntPtr.Zero, IntPtr.Zero);
+        Call(clock, "ResetPacificPreview");
+        timer.Start();
+    }
     private static IntPtr CreateTestTaskbar()
     {
         var instance = GetModuleHandle(null);
@@ -392,6 +542,7 @@ internal static class Program
     private static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
     [DllImport("shcore.dll")] private static extern int GetScaleFactorForMonitor(IntPtr monitor, out int scale);
     [DllImport("shcore.dll")] private static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x, out uint y);

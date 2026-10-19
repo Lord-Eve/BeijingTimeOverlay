@@ -23,6 +23,8 @@ internal sealed class OverlaySettings
 
     public bool HideWhenFullscreen { get; set; }
 
+    public bool ShowPacificTimeOnHover { get; set; } = true;
+
     public bool StartWithWindows { get; set; }
 }
 

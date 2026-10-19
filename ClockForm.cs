@@ -76,6 +76,10 @@ internal sealed class ClockForm : Form
     private readonly System.Windows.Forms.Timer _fullscreenTimer;
     private readonly System.Windows.Forms.Timer _displayTimer;
     private readonly System.Windows.Forms.Timer _reassertTimer;
+    private readonly System.Windows.Forms.Timer _hoverTimer;
+    private readonly HoverPreviewState _hoverState = new();
+    private PacificTimeCard? _pacificCard;
+    private readonly TimeZoneInfo? _pacificTimeZone;
     private readonly WinEventDelegate _foregroundChangedCallback;
     private IntPtr _foregroundHook;
     private IntPtr _frameworkOwner;
@@ -86,6 +90,7 @@ internal sealed class ClockForm : Form
     private ToolStripMenuItem _clickThroughItem = null!;
     private ToolStripMenuItem _hideWhenFullscreenItem = null!;
     private ToolStripMenuItem _startupItem = null!;
+    private ToolStripMenuItem _pacificHoverItem = null!;
     private Font _clockFont;
     private OverlayLayout _layout;
     private readonly Action<OverlaySettings> _persistSettings;
@@ -111,6 +116,12 @@ internal sealed class ClockForm : Form
         _persistSettings = persistSettings;
         _clickThrough = _settings.ClickThrough;
         _beijingTimeZone = FindBeijingTimeZone();
+        try
+        {
+            _pacificTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+        }
+        catch (TimeZoneNotFoundException) { }
+        catch (InvalidTimeZoneException) { }
 
         Text = "北京时间";
         AccessibleName = "北京时间浮窗";
@@ -192,6 +203,17 @@ internal sealed class ClockForm : Form
             KeepAboveTaskbar();
         };
 
+        // Coordinate polling also works when layered click-through windows do
+        // not receive MouseEnter/MouseLeave. No global mouse hook is installed.
+        _hoverTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        _hoverTimer.Tick += (_, _) =>
+        {
+            var eligible = GetCursorPos(out var point) && Control.MouseButtons == MouseButtons.None;
+            var cursor = new Point(point.X, point.Y);
+            eligible = eligible && Bounds.Contains(cursor) && IsClockExposedAt(cursor);
+            UpdatePacificHover(eligible, Environment.TickCount64);
+        };
+
         // Out-of-context WinEvents are delivered on this UI thread's message loop.
         // Keep the delegate in a field so the GC cannot collect it while hooked.
         _foregroundChangedCallback = HandleForegroundChanged;
@@ -205,6 +227,13 @@ internal sealed class ClockForm : Form
             WinEventOutOfContext);
 
         MouseDown += HandleMouseDown;
+        LocationChanged += (_, _) => ResetPacificPreview();
+        SizeChanged += (_, _) => ResetPacificPreview();
+        VisibleChanged += (_, _) =>
+        {
+            ResetPacificPreview();
+            RefreshHoverTimer();
+        };
         DpiChanged += (_, _) =>
         {
             // This can be raised synchronously while Location is changing.
@@ -224,6 +253,7 @@ internal sealed class ClockForm : Form
         ApplySavedOrDefaultPosition();
         UpdateClock();
         _clockTimer.Start();
+        RefreshHoverTimer();
         if (_settings.HideWhenFullscreen)
         {
             _fullscreenTimer.Start();
@@ -270,6 +300,7 @@ internal sealed class ClockForm : Form
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        ResetPacificPreview();
         base.OnHandleDestroyed(e);
         if (_allowClose || _isDisposed || RecreatingHandle)
         {
@@ -306,6 +337,7 @@ internal sealed class ClockForm : Form
     {
         if (message.Msg == WmEnterSizeMove)
         {
+            ResetPacificPreview();
             _isDragging = true;
             _displayTimer.Stop();
         }
@@ -372,7 +404,11 @@ internal sealed class ClockForm : Form
     {
         var menu = new ContextMenuStrip();
         menu.RenderMode = ToolStripRenderMode.System;
-        menu.Opening += (_, _) => RefreshMenuChecks();
+        menu.Opening += (_, _) =>
+        {
+            ResetPacificPreview();
+            RefreshMenuChecks();
+        };
 
         var toggleItem = new ToolStripMenuItem("显示 / 隐藏");
         toggleItem.Click += (_, _) => ToggleVisibility();
@@ -395,6 +431,9 @@ internal sealed class ClockForm : Form
         };
         _hideWhenFullscreenItem.Click += (_, _) => SetHideWhenFullscreen(!_settings.HideWhenFullscreen);
 
+        _pacificHoverItem = new ToolStripMenuItem("悬停显示太平洋时间") { CheckOnClick = true };
+        _pacificHoverItem.Click += (_, _) => SetPacificHover(!_settings.ShowPacificTimeOnHover);
+
         var moveItem = new ToolStripMenuItem("移到当前屏幕右下角");
         moveItem.Click += (_, _) => PlaceAtCurrentScreenBottomRight();
 
@@ -415,6 +454,7 @@ internal sealed class ClockForm : Form
         menu.Items.Add(_topMostItem);
         menu.Items.Add(_clickThroughItem);
         menu.Items.Add(_hideWhenFullscreenItem);
+        menu.Items.Add(_pacificHoverItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(moveItem);
         menu.Items.Add(resetItem);
@@ -427,7 +467,12 @@ internal sealed class ClockForm : Form
 
     private void UpdateClock()
     {
-        var beijingNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _beijingTimeZone);
+        var utc = DateTimeOffset.UtcNow;
+        if (_pacificCard?.Visible == true && _pacificTimeZone is not null)
+        {
+            _pacificCard.UpdateTime(utc, _pacificTimeZone);
+        }
+        var beijingNow = TimeZoneInfo.ConvertTime(utc, _beijingTimeZone);
         var newTimeText = beijingNow.ToString("HH:mm:ss", DisplayCulture);
         var newDateText = beijingNow.ToString("yyyy/M/d", DisplayCulture);
 
@@ -709,6 +754,7 @@ internal sealed class ClockForm : Form
 
     private void QueueDisplayLayout()
     {
+        ResetPacificPreview();
         if (_isDisposed || _isDragging)
         {
             return;
@@ -861,6 +907,7 @@ internal sealed class ClockForm : Form
 
     private void HandleMouseDown(object? sender, MouseEventArgs e)
     {
+        ResetPacificPreview();
         if (e.Button != MouseButtons.Left || _clickThrough)
         {
             return;
@@ -889,6 +936,7 @@ internal sealed class ClockForm : Form
 
     private void SetTopMost(bool enabled)
     {
+        ResetPacificPreview();
         _settings.TopMost = enabled;
         TopMost = enabled;
         AttachToTaskbar();
@@ -1037,6 +1085,9 @@ internal sealed class ClockForm : Form
         _topMostItem.Checked = _settings.TopMost;
         _clickThroughItem.Checked = _settings.ClickThrough;
         _hideWhenFullscreenItem.Checked = _settings.HideWhenFullscreen;
+        _pacificHoverItem.Checked = _settings.ShowPacificTimeOnHover;
+        _pacificHoverItem.Enabled = _pacificTimeZone is not null;
+        _pacificHoverItem.ToolTipText = _pacificTimeZone is null ? "系统缺少太平洋时区数据" : "停留约 300 毫秒预览，移开收起";
         _startupItem.Checked = _settings.StartWithWindows || StartupManager.IsEnabled();
     }
 
@@ -1104,12 +1155,81 @@ internal sealed class ClockForm : Form
         _fullscreenTimer.Dispose();
         _displayTimer.Dispose();
         _reassertTimer.Dispose();
+        _hoverTimer.Stop();
+        _hoverTimer.Dispose();
+        _pacificCard?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _trayIcon.Dispose();
         _menu.Dispose();
         _clockFont.Dispose();
     }
+
+    private void RefreshHoverTimer()
+    {
+        if (_isDisposed) return;
+        _hoverTimer.Enabled = Visible && _settings.ShowPacificTimeOnHover && _pacificTimeZone is not null;
+    }
+
+    private void SetPacificHover(bool enabled)
+    {
+        _settings.ShowPacificTimeOnHover = enabled;
+        ResetPacificPreview();
+        RefreshHoverTimer();
+        SaveSettings();
+        RefreshMenuChecks();
+    }
+
+    private void ResetPacificPreview()
+    {
+        _hoverState.Reset();
+        _pacificCard?.Hide();
+    }
+
+    internal void UpdatePacificHover(bool pointerEligible, long timestamp)
+    {
+        var eligible = pointerEligible && !_isDisposed && !_allowClose && Visible && IsHandleCreated &&
+            !_isDragging && !_isLoadingPosition && !_displayTimer.Enabled && !_menu.Visible &&
+            !_hiddenByUser && !_hiddenByFullscreen && _settings.ShowPacificTimeOnHover && _pacificTimeZone is not null;
+        if (!_hoverState.Update(eligible, timestamp))
+        {
+            _pacificCard?.Hide();
+            return;
+        }
+
+        if (_pacificCard?.Visible == true) return;
+        if (_pacificCard is null || _pacificCard.IsDisposed)
+        {
+            _pacificCard = new PacificTimeCard();
+        }
+        _pacificCard.ConfigureDpi(_layout.Dpi);
+        _pacificCard.Bounds = OverlayGeometry.PacificCardBounds(Bounds, Screen.FromHandle(Handle).WorkingArea, _layout.Dpi);
+        _pacificCard.UpdateTime(DateTimeOffset.UtcNow, _pacificTimeZone!);
+        _pacificCard.Show(this);
+    }
+
+    private bool IsClockExposedAt(Point cursor)
+    {
+        if (!IsHandleCreated) return false;
+        // WindowFromPoint skips cross-process click-through windows. Walk only
+        // the windows above ours so previews cannot appear through another app.
+        for (var window = GetWindow(Handle, 3); window != IntPtr.Zero; window = GetWindow(window, 3))
+        {
+            if (_pacificCard?.IsHandleCreated == true && window == _pacificCard.Handle) continue;
+            if (!IsWindowVisible(window) || IsIconic(window) ||
+                (DwmGetWindowAttribute(window, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) ||
+                !GetWindowRect(window, out var bounds)) continue;
+            if (cursor.X >= bounds.Left && cursor.X < bounds.Right && cursor.Y >= bounds.Top && cursor.Y < bounds.Bottom)
+                return false;
+        }
+        return true;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
 
     private static Icon CreateTrayIcon()
     {

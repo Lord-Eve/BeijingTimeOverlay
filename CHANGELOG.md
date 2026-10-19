@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-19
+
+### 新增
+
+- 默认开启“悬停显示太平洋时间”：在北京时间浮窗停留约 300 毫秒后，以不抢焦点、不拦截鼠标的卡片预览洛杉矶时间和当地日期，自动识别 PDT/PST；移开鼠标收起，可从托盘菜单关闭。
+- 预览卡片适配所在显示器缩放与工作区边界；鼠标穿透下仍可触发，拖动、打开菜单、隐藏主浮窗或窗口重建时自动收起，不改变系统时区及现有开机启动配置。
+
 ## [1.1.4] - 2026-10-15
 
 ### 修复
@@ -77,7 +84,8 @@
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
 
-[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.1...v1.1.2
