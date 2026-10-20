@@ -25,6 +25,9 @@ internal static class Program
             TestLayouts();
             TestPositions();
             TestPacificPreview();
+            TestHoverDebugGate();
+            TestHoverPointerSampling();
+            TestHoverDebugRotation();
 
             Console.WriteLine($"PASS: {_assertions} assertions; live-ui={liveUi}");
             return 0;
@@ -117,10 +120,11 @@ internal static class Program
         Check(!disabled.ShowPacificTimeOnHover, "Explicit disabled preference survives deserialization");
 
         var zone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+        var beijingZone = TimeZoneInfo.FindSystemTimeZoneById("China Standard Time");
         void Time(string utc, string time, string date, string abbreviation)
         {
-            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone);
-            Check(actual == new PacificTimeText(time, date, abbreviation), $"Pacific date/DST: {utc} => {actual}");
+            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone, beijingZone);
+            Check((actual.Time, actual.Date, actual.Zone) == (time, date, abbreviation), $"Pacific date/DST: {utc} => {actual}");
         }
         Time("2026-03-08T09:59:59Z", "01:59:59", "2026/3/8", "PST");
         Time("2026-03-08T10:00:00Z", "03:00:00", "2026/3/8", "PDT");
@@ -128,6 +132,23 @@ internal static class Program
         Time("2026-11-01T09:00:00Z", "01:00:00", "2026/11/1", "PST");
         Time("2027-01-01T00:30:00Z", "16:30:00", "2026/12/31", "PST");
         Time("2026-07-01T07:00:00Z", "00:00:00", "2026/7/1", "PDT");
+        void Weekdays(string utc, string pacific, string beijing)
+        {
+            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone, beijingZone);
+            Check(actual.Weekday == pacific && actual.BeijingWeekday == beijing, $"Weekdays at the same instant: {utc}");
+            Check(actual.WeekdayComparison == $"{pacific}（北京时间：{beijing}）", "Chinese weekday comparison label");
+        }
+        Weekdays("2026-07-01T07:00:00Z", "星期三", "星期三");
+        Weekdays("2026-07-01T15:59:59Z", "星期三", "星期三");
+        Weekdays("2026-07-01T16:00:00Z", "星期三", "星期四");
+        Weekdays("2026-07-02T06:59:59Z", "星期三", "星期四");
+        Weekdays("2026-07-02T07:00:00Z", "星期四", "星期四");
+        Weekdays("2026-12-31T16:00:00Z", "星期四", "星期五");
+        Weekdays("2026-07-05T16:00:00Z", "星期日", "星期一");
+        var weekdayNames = new[] { "星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六" };
+        var sundayUtc = DateTimeOffset.Parse("2026-07-05T16:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        for (var day = 0; day < 7; day++)
+            Weekdays(sundayUtc.AddDays(day).ToString("O"), weekdayNames[day], weekdayNames[(day + 1) % 7]);
         foreach (var dpi in new[] { 96, 120, 144, 168, 192, 240, 288 })
         {
             foreach (var work in new[] { new Rectangle(0, 0, 2560, 1380), new Rectangle(-2560, -1600, 2560, 1528) })
@@ -154,6 +175,92 @@ internal static class Program
             Check(graphics.MeasureString("2026/12/31  ·  PST", label, PointF.Empty, format).Width <= width, "Preview date and zone fit");
             Check(graphics.MeasureString("23:59:59", timeFont, PointF.Empty, format).Width <= width, "Preview time fits");
             Check(78 * dpi / 96f + label.GetHeight(graphics) < bitmap.Height - 2, "Preview footer does not clip");
+            Check(78 * dpi / 96f + label.GetHeight(graphics) < 98 * dpi / 96f, "Date and weekday rows do not overlap");
+            Check(98 * dpi / 96f + label.GetHeight(graphics) < bitmap.Height - 2, "Weekday row does not clip");
+            foreach (var pacific in weekdayNames)
+                foreach (var beijing in weekdayNames)
+                    Check(graphics.MeasureString($"{pacific}（北京时间：{beijing}）", label, PointF.Empty, format).Width <= width,
+                        $"Weekday comparison fits at {dpi} DPI: {pacific}/{beijing}");
+        }
+    }
+
+    private static void TestHoverDebugGate()
+    {
+        var gate = new HoverDebugGate();
+        Check(gate.ShouldWrite("hover", "blocked", 1000), "First diagnostic snapshot is logged");
+        for (var now = 1100; now < 2000; now += 100)
+            Check(!gate.ShouldWrite("hover", "blocked", now), "Unchanged 100ms polls do not write again");
+        Check(gate.ShouldWrite("hover", "blocked", 2000), "Unchanged state has a one-second heartbeat");
+        Check(gate.ShouldWrite("hover", "eligible", 2001), "Brief eligibility transitions are not throttled away");
+        Check(gate.ShouldWrite("hover", "blocked", 2002), "Brief resets remain visible in the timeline");
+        Check(gate.ShouldWrite("menu", "opened", 2002), "Menu events are independent of hover snapshots");
+        Check(!gate.ShouldWrite("hover", "blocked", 3001), "Transition restarts unchanged-state interval");
+        Check(gate.ShouldWrite("hover", "blocked", 3002), "Heartbeat resumes one second after transition");
+    }
+
+    private static void TestHoverPointerSampling()
+    {
+        var point = new Point(10, 20);
+        bool Unexpected() => throw new InvalidOperationException("Later input check should have been skipped");
+        var missing = HoverInput.SamplePointer(null, Unexpected, _ => Unexpected(), _ => Unexpected());
+        Check(!missing.Eligible && missing.Cursor is null && missing.MouseButtonsReleased is null &&
+              missing.InsideBounds is null && missing.Exposed is null, "Missing cursor is distinguishable and skips all later checks");
+        var pressed = HoverInput.SamplePointer(point, () => true, _ => Unexpected(), _ => Unexpected());
+        Check(!pressed.Eligible && pressed.MouseButtonsReleased == false && pressed.InsideBounds is null && pressed.Exposed is null,
+            "Held button is distinguishable and skips bounds and exposure queries");
+        var outside = HoverInput.SamplePointer(point, () => false, _ => false, _ => Unexpected());
+        Check(!outside.Eligible && outside.MouseButtonsReleased == true && outside.InsideBounds == false && outside.Exposed is null,
+            "Outside cursor is distinguishable and skips exposure query");
+        var order = new List<string>();
+        HoverPointerState Sample(bool exposed) => HoverInput.SamplePointer(point,
+            () => { order.Add("buttons"); return false; },
+            value => { Check(value == point, "Bounds check uses sampled cursor"); order.Add("bounds"); return true; },
+            value => { Check(value == point, "Exposure check uses sampled cursor"); order.Add("exposure"); return exposed; });
+        var blocked = Sample(false);
+        Check(!blocked.Eligible && blocked.InsideBounds == true && blocked.Exposed == false, "Blocked window is distinguishable");
+        Check(order.SequenceEqual(new[] { "buttons", "bounds", "exposure" }), "Original query order is preserved without duplicate reads");
+        order.Clear();
+        Check(Sample(true).Eligible, "All pointer checks passing permits hover");
+        Check(order.SequenceEqual(new[] { "buttons", "bounds", "exposure" }), "Eligible sample reads each input once");
+    }
+
+    private static void TestHoverDebugRotation()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "hover-log-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "hover-debug.log");
+        var backup = path + ".1";
+        const int limit = 62;
+        var first = new string('甲', 10) + "\n"; // 31 UTF-8 bytes per entry, with no BOM.
+        var second = new string('乙', 10) + "\n";
+        var third = new string('丙', 10) + "\n";
+        try
+        {
+            HoverDebugLog.AppendBounded(path, first, limit);
+            Check(new FileInfo(path).Length == 31 && File.ReadAllText(path) == first, "UTF-8 entry is written without BOM");
+            HoverDebugLog.AppendBounded(path, second, limit);
+            Check(new FileInfo(path).Length == limit && !File.Exists(backup), "Exact byte limit does not rotate prematurely");
+            HoverDebugLog.AppendBounded(path, third, limit);
+            Check(File.ReadAllText(backup) == first + second && File.ReadAllText(path) == third,
+                "Rotation preserves complete UTF-8 records in one backup");
+            HoverDebugLog.AppendBounded(path, third, limit);
+            HoverDebugLog.AppendBounded(path, first, limit);
+            Check(File.ReadAllText(backup) == third + third && File.ReadAllText(path) == first,
+                "Next rotation replaces the old backup");
+            Check(Directory.GetFiles(directory).Length == 2 && new FileInfo(backup).Length <= limit && new FileInfo(path).Length <= limit,
+                "Only two bounded files are retained");
+            HoverDebugLog.AppendBounded(path, new string('x', limit + 1), limit);
+            Check(File.ReadAllText(path) == first, "Oversized single record cannot grow the log beyond its cap");
+            File.WriteAllText(path, new string('x', limit + 1));
+            File.WriteAllText(backup, new string('x', limit + 1));
+            HoverDebugLog.AppendBounded(path, second, limit);
+            Check(File.ReadAllText(path) == second && !File.Exists(backup), "Oversized legacy logs are reset to bounded storage");
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(backup);
+            Directory.Delete(directory);
         }
     }
 
@@ -446,7 +553,8 @@ internal static class Program
         Check(card.ClientSize == OverlayGeometry.PacificCardSize(MonitorDpi(clock.Handle)), "Live preview follows anchor monitor DPI");
         using (var image = new Bitmap(card.Width, card.Height))
         {
-            card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"));
+            card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"),
+                TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"));
             card.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
             var captureDirectory = Environment.GetEnvironmentVariable("BJT_PREVIEW_CAPTURE_DIR");
             if (!string.IsNullOrEmpty(captureDirectory))

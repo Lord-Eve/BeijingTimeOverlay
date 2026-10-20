@@ -16,6 +16,22 @@ internal static class HoverInput
         }
         return false;
     }
+
+    public static HoverPointerState SamplePointer(Point? cursor, Func<bool> anyButtonDown,
+        Func<Point, bool> contains, Func<Point, bool> isExposed)
+    {
+        // Preserve the original short-circuit order and sample each input once.
+        // Null means a later check was not reached, rather than that it failed.
+        if (cursor is not Point point) return new(cursor, null, null, null);
+        if (anyButtonDown()) return new(cursor, false, null, null);
+        if (!contains(point)) return new(cursor, true, false, null);
+        return new(cursor, true, true, isExposed(point));
+    }
+}
+
+internal readonly record struct HoverPointerState(Point? Cursor, bool? MouseButtonsReleased, bool? InsideBounds, bool? Exposed)
+{
+    public bool Eligible => Cursor.HasValue && MouseButtonsReleased == true && InsideBounds == true && Exposed == true;
 }
 
 // No window or wall-clock dependency: hover timing uses a monotonic timestamp.
@@ -38,13 +54,19 @@ internal sealed class HoverPreviewState
     public void Reset() => _enteredAt = null;
 }
 
-internal readonly record struct PacificTimeText(string Time, string Date, string Zone)
+internal readonly record struct PacificTimeText(string Time, string Date, string Zone, string Weekday, string BeijingWeekday)
 {
-    public static PacificTimeText FromUtc(DateTimeOffset utc, TimeZoneInfo zone)
+    private static readonly CultureInfo WeekdayCulture = CultureInfo.GetCultureInfo("zh-CN");
+
+    public string WeekdayComparison => $"{Weekday}（北京时间：{BeijingWeekday}）";
+
+    public static PacificTimeText FromUtc(DateTimeOffset utc, TimeZoneInfo zone, TimeZoneInfo beijingZone)
     {
         var local = TimeZoneInfo.ConvertTime(utc, zone);
+        var beijing = TimeZoneInfo.ConvertTime(utc, beijingZone);
         return new PacificTimeText(local.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
             local.ToString("yyyy/M/d", CultureInfo.InvariantCulture),
-            zone.IsDaylightSavingTime(local) ? "PDT" : "PST");
+            zone.IsDaylightSavingTime(local) ? "PDT" : "PST",
+            local.ToString("dddd", WeekdayCulture), beijing.ToString("dddd", WeekdayCulture));
     }
 }

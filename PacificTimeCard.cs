@@ -55,12 +55,12 @@ internal sealed class PacificTimeCard : Form
         Invalidate();
     }
 
-    public void UpdateTime(DateTimeOffset utc, TimeZoneInfo zone)
+    public void UpdateTime(DateTimeOffset utc, TimeZoneInfo zone, TimeZoneInfo beijingZone)
     {
-        var next = PacificTimeText.FromUtc(utc, zone);
+        var next = PacificTimeText.FromUtc(utc, zone, beijingZone);
         if (next == _text) return;
         _text = next;
-        AccessibleDescription = $"洛杉矶 {_text.Date} {_text.Time} {_text.Zone}";
+        AccessibleDescription = $"洛杉矶 {_text.Date} {_text.Time} {_text.Zone} {_text.WeekdayComparison}";
         Invalidate();
     }
 
@@ -84,6 +84,7 @@ internal sealed class PacificTimeCard : Form
         Draw("太平洋时间 · 洛杉矶", _labelFont, accent, 12);
         Draw(_text.Time ?? string.Empty, _timeFont, foreground, 33);
         Draw($"{_text.Date}  ·  {_text.Zone}", _labelFont, muted, 78);
+        Draw(_text.WeekdayComparison, _labelFont, muted, 98);
     }
 
     protected override void Dispose(bool disposing)
