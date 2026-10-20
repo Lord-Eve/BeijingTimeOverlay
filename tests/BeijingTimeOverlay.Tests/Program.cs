@@ -118,10 +118,11 @@ internal static class Program
         Check(!disabled.ShowPacificTimeOnHover, "Explicit disabled preference survives deserialization");
 
         var zone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+        var beijingZone = TimeZoneInfo.FindSystemTimeZoneById("China Standard Time");
         void Time(string utc, string time, string date, string abbreviation)
         {
-            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone);
-            Check(actual == new PacificTimeText(time, date, abbreviation), $"Pacific date/DST: {utc} => {actual}");
+            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone, beijingZone);
+            Check((actual.Time, actual.Date, actual.Zone) == (time, date, abbreviation), $"Pacific date/DST: {utc} => {actual}");
         }
         Time("2026-03-08T09:59:59Z", "01:59:59", "2026/3/8", "PST");
         Time("2026-03-08T10:00:00Z", "03:00:00", "2026/3/8", "PDT");
@@ -129,6 +130,23 @@ internal static class Program
         Time("2026-11-01T09:00:00Z", "01:00:00", "2026/11/1", "PST");
         Time("2027-01-01T00:30:00Z", "16:30:00", "2026/12/31", "PST");
         Time("2026-07-01T07:00:00Z", "00:00:00", "2026/7/1", "PDT");
+        void Weekdays(string utc, string pacific, string beijing)
+        {
+            var actual = PacificTimeText.FromUtc(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture), zone, beijingZone);
+            Check(actual.Weekday == pacific && actual.BeijingWeekday == beijing, $"Weekdays at the same instant: {utc}");
+            Check(actual.WeekdayComparison == $"{pacific}（北京时间：{beijing}）", "Chinese weekday comparison label");
+        }
+        Weekdays("2026-07-01T07:00:00Z", "星期三", "星期三");
+        Weekdays("2026-07-01T15:59:59Z", "星期三", "星期三");
+        Weekdays("2026-07-01T16:00:00Z", "星期三", "星期四");
+        Weekdays("2026-07-02T06:59:59Z", "星期三", "星期四");
+        Weekdays("2026-07-02T07:00:00Z", "星期四", "星期四");
+        Weekdays("2026-12-31T16:00:00Z", "星期四", "星期五");
+        Weekdays("2026-07-05T16:00:00Z", "星期日", "星期一");
+        var weekdayNames = new[] { "星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六" };
+        var sundayUtc = DateTimeOffset.Parse("2026-07-05T16:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        for (var day = 0; day < 7; day++)
+            Weekdays(sundayUtc.AddDays(day).ToString("O"), weekdayNames[day], weekdayNames[(day + 1) % 7]);
         foreach (var dpi in new[] { 96, 120, 144, 168, 192, 240, 288 })
         {
             foreach (var work in new[] { new Rectangle(0, 0, 2560, 1380), new Rectangle(-2560, -1600, 2560, 1528) })
@@ -155,6 +173,12 @@ internal static class Program
             Check(graphics.MeasureString("2026/12/31  ·  PST", label, PointF.Empty, format).Width <= width, "Preview date and zone fit");
             Check(graphics.MeasureString("23:59:59", timeFont, PointF.Empty, format).Width <= width, "Preview time fits");
             Check(78 * dpi / 96f + label.GetHeight(graphics) < bitmap.Height - 2, "Preview footer does not clip");
+            Check(78 * dpi / 96f + label.GetHeight(graphics) < 98 * dpi / 96f, "Date and weekday rows do not overlap");
+            Check(98 * dpi / 96f + label.GetHeight(graphics) < bitmap.Height - 2, "Weekday row does not clip");
+            foreach (var pacific in weekdayNames)
+                foreach (var beijing in weekdayNames)
+                    Check(graphics.MeasureString($"{pacific}（北京时间：{beijing}）", label, PointF.Empty, format).Width <= width,
+                        $"Weekday comparison fits at {dpi} DPI: {pacific}/{beijing}");
         }
     }
 
@@ -461,7 +485,8 @@ internal static class Program
         Check(card.ClientSize == OverlayGeometry.PacificCardSize(MonitorDpi(clock.Handle)), "Live preview follows anchor monitor DPI");
         using (var image = new Bitmap(card.Width, card.Height))
         {
-            card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"));
+            card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"),
+                TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"));
             card.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
             var captureDirectory = Environment.GetEnvironmentVariable("BJT_PREVIEW_CAPTURE_DIR");
             if (!string.IsNullOrEmpty(captureDirectory))

@@ -478,7 +478,7 @@ internal sealed class ClockForm : Form
         var utc = DateTimeOffset.UtcNow;
         if (_pacificCard?.Visible == true && _pacificTimeZone is not null)
         {
-            _pacificCard.UpdateTime(utc, _pacificTimeZone);
+            _pacificCard.UpdateTime(utc, _pacificTimeZone, _beijingTimeZone);
         }
         var beijingNow = TimeZoneInfo.ConvertTime(utc, _beijingTimeZone);
         var newTimeText = beijingNow.ToString("HH:mm:ss", DisplayCulture);
@@ -1242,7 +1242,7 @@ internal sealed class ClockForm : Form
         }
         _pacificCard.ConfigureDpi(_layout.Dpi);
         _pacificCard.Bounds = OverlayGeometry.PacificCardBounds(Bounds, Screen.FromHandle(Handle).WorkingArea, _layout.Dpi);
-        _pacificCard.UpdateTime(DateTimeOffset.UtcNow, _pacificTimeZone!);
+        _pacificCard.UpdateTime(DateTimeOffset.UtcNow, _pacificTimeZone!, _beijingTimeZone);
         _pacificCard.Show(this);
     }
 

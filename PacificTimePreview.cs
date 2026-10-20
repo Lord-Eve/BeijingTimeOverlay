@@ -38,13 +38,19 @@ internal sealed class HoverPreviewState
     public void Reset() => _enteredAt = null;
 }
 
-internal readonly record struct PacificTimeText(string Time, string Date, string Zone)
+internal readonly record struct PacificTimeText(string Time, string Date, string Zone, string Weekday, string BeijingWeekday)
 {
-    public static PacificTimeText FromUtc(DateTimeOffset utc, TimeZoneInfo zone)
+    private static readonly CultureInfo WeekdayCulture = CultureInfo.GetCultureInfo("zh-CN");
+
+    public string WeekdayComparison => $"{Weekday}（北京时间：{BeijingWeekday}）";
+
+    public static PacificTimeText FromUtc(DateTimeOffset utc, TimeZoneInfo zone, TimeZoneInfo beijingZone)
     {
         var local = TimeZoneInfo.ConvertTime(utc, zone);
+        var beijing = TimeZoneInfo.ConvertTime(utc, beijingZone);
         return new PacificTimeText(local.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
             local.ToString("yyyy/M/d", CultureInfo.InvariantCulture),
-            zone.IsDaylightSavingTime(local) ? "PDT" : "PST");
+            zone.IsDaylightSavingTime(local) ? "PDT" : "PST",
+            local.ToString("dddd", WeekdayCulture), beijing.ToString("dddd", WeekdayCulture));
     }
 }

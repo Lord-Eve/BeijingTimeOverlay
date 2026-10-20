@@ -15,7 +15,7 @@ internal static class OverlayGeometry
     public static Size PacificCardSize(int dpi)
     {
         var scale = (dpi > 0 ? dpi : 96) / 96d;
-        return new Size((int)Math.Round(208 * scale), (int)Math.Round(106 * scale));
+        return new Size((int)Math.Round(208 * scale), (int)Math.Round(126 * scale));
     }
 
     public static Rectangle PacificCardBounds(Rectangle anchor, Rectangle workArea, int dpi)
