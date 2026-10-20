@@ -26,6 +26,8 @@ internal static class Program
             TestPositions();
             TestPacificPreview();
             TestHoverDebugGate();
+            TestHoverPointerSampling();
+            TestHoverDebugRotation();
 
             Console.WriteLine($"PASS: {_assertions} assertions; live-ui={liveUi}");
             return 0;
@@ -194,6 +196,72 @@ internal static class Program
         Check(gate.ShouldWrite("menu", "opened", 2002), "Menu events are independent of hover snapshots");
         Check(!gate.ShouldWrite("hover", "blocked", 3001), "Transition restarts unchanged-state interval");
         Check(gate.ShouldWrite("hover", "blocked", 3002), "Heartbeat resumes one second after transition");
+    }
+
+    private static void TestHoverPointerSampling()
+    {
+        var point = new Point(10, 20);
+        bool Unexpected() => throw new InvalidOperationException("Later input check should have been skipped");
+        var missing = HoverInput.SamplePointer(null, Unexpected, _ => Unexpected(), _ => Unexpected());
+        Check(!missing.Eligible && missing.Cursor is null && missing.MouseButtonsReleased is null &&
+              missing.InsideBounds is null && missing.Exposed is null, "Missing cursor is distinguishable and skips all later checks");
+        var pressed = HoverInput.SamplePointer(point, () => true, _ => Unexpected(), _ => Unexpected());
+        Check(!pressed.Eligible && pressed.MouseButtonsReleased == false && pressed.InsideBounds is null && pressed.Exposed is null,
+            "Held button is distinguishable and skips bounds and exposure queries");
+        var outside = HoverInput.SamplePointer(point, () => false, _ => false, _ => Unexpected());
+        Check(!outside.Eligible && outside.MouseButtonsReleased == true && outside.InsideBounds == false && outside.Exposed is null,
+            "Outside cursor is distinguishable and skips exposure query");
+        var order = new List<string>();
+        HoverPointerState Sample(bool exposed) => HoverInput.SamplePointer(point,
+            () => { order.Add("buttons"); return false; },
+            value => { Check(value == point, "Bounds check uses sampled cursor"); order.Add("bounds"); return true; },
+            value => { Check(value == point, "Exposure check uses sampled cursor"); order.Add("exposure"); return exposed; });
+        var blocked = Sample(false);
+        Check(!blocked.Eligible && blocked.InsideBounds == true && blocked.Exposed == false, "Blocked window is distinguishable");
+        Check(order.SequenceEqual(new[] { "buttons", "bounds", "exposure" }), "Original query order is preserved without duplicate reads");
+        order.Clear();
+        Check(Sample(true).Eligible, "All pointer checks passing permits hover");
+        Check(order.SequenceEqual(new[] { "buttons", "bounds", "exposure" }), "Eligible sample reads each input once");
+    }
+
+    private static void TestHoverDebugRotation()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "hover-log-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "hover-debug.log");
+        var backup = path + ".1";
+        const int limit = 62;
+        var first = new string('甲', 10) + "\n"; // 31 UTF-8 bytes per entry, with no BOM.
+        var second = new string('乙', 10) + "\n";
+        var third = new string('丙', 10) + "\n";
+        try
+        {
+            HoverDebugLog.AppendBounded(path, first, limit);
+            Check(new FileInfo(path).Length == 31 && File.ReadAllText(path) == first, "UTF-8 entry is written without BOM");
+            HoverDebugLog.AppendBounded(path, second, limit);
+            Check(new FileInfo(path).Length == limit && !File.Exists(backup), "Exact byte limit does not rotate prematurely");
+            HoverDebugLog.AppendBounded(path, third, limit);
+            Check(File.ReadAllText(backup) == first + second && File.ReadAllText(path) == third,
+                "Rotation preserves complete UTF-8 records in one backup");
+            HoverDebugLog.AppendBounded(path, third, limit);
+            HoverDebugLog.AppendBounded(path, first, limit);
+            Check(File.ReadAllText(backup) == third + third && File.ReadAllText(path) == first,
+                "Next rotation replaces the old backup");
+            Check(Directory.GetFiles(directory).Length == 2 && new FileInfo(backup).Length <= limit && new FileInfo(path).Length <= limit,
+                "Only two bounded files are retained");
+            HoverDebugLog.AppendBounded(path, new string('x', limit + 1), limit);
+            Check(File.ReadAllText(path) == first, "Oversized single record cannot grow the log beyond its cap");
+            File.WriteAllText(path, new string('x', limit + 1));
+            File.WriteAllText(backup, new string('x', limit + 1));
+            HoverDebugLog.AppendBounded(path, second, limit);
+            Check(File.ReadAllText(path) == second && !File.Exists(backup), "Oversized legacy logs are reset to bounded storage");
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(backup);
+            Directory.Delete(directory);
+        }
     }
 
     private static void TestPositions()

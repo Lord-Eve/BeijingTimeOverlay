@@ -21,6 +21,8 @@ internal sealed class HoverDebugGate
 
 internal sealed class HoverDebugLog
 {
+    internal const int MaxLogBytes = 5 * 1024 * 1024;
+    private static readonly Encoding LogEncoding = new UTF8Encoding(false);
     private readonly HoverDebugGate _gate = new();
     public bool Enabled { get; } = Environment.GetEnvironmentVariable("BTO_HOVER_DEBUG") == "1";
 
@@ -33,15 +35,33 @@ internal sealed class HoverDebugLog
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "BeijingTimeOverlay");
             Directory.CreateDirectory(directory);
-            File.AppendAllText(Path.Combine(directory, "hover-debug.log"),
-                $"{DateTimeOffset.Now:O} pid={Environment.ProcessId} {category} {state} {details?.Invoke()}{Environment.NewLine}",
-                new UTF8Encoding(false));
+            AppendBounded(Path.Combine(directory, "hover-debug.log"),
+                $"{DateTimeOffset.Now:O} pid={Environment.ProcessId} {category} {state} {details?.Invoke()}{Environment.NewLine}");
         }
         catch
         {
             // Diagnostics must not interrupt the overlay, including when a
             // sampled window disappears or the log directory is unavailable.
         }
+    }
+
+    internal static void AppendBounded(string path, string entry, int maxBytes = MaxLogBytes)
+    {
+        var bytes = LogEncoding.GetBytes(entry);
+        if (bytes.Length > maxBytes) return;
+        var backupPath = path + ".1";
+        var backup = new FileInfo(backupPath);
+        if (backup.Exists && backup.Length > maxBytes) File.Delete(backupPath);
+        var current = new FileInfo(path);
+        if (current.Exists && current.Length > maxBytes - bytes.Length)
+        {
+            // Oversized logs from an older build are reset; normal rotation
+            // preserves one complete prior file and replaces the older backup.
+            if (current.Length > maxBytes) File.Delete(path);
+            else File.Move(path, backupPath, overwrite: true);
+        }
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        stream.Write(bytes);
     }
 
     internal static string DescribeWindow(IntPtr window)

@@ -81,6 +81,7 @@ internal sealed class ClockForm : Form
     private readonly HoverDebugLog _hoverDebug = new();
     private IntPtr _hoverDebugBlocker;
     private bool? _hoverDebugPointerEligible;
+    private HoverPointerState? _hoverDebugPointerState;
     private long? _hoverDebugLastPoll;
     private readonly Func<Point?> _readCursorPosition;
     private PacificTimeCard? _pacificCard;
@@ -1199,9 +1200,10 @@ internal sealed class ClockForm : Form
         // GetKeyState/Control.MouseButtons is the last state delivered to this
         // thread, not the current physical state. A no-activate background
         // window can retain "pressed" until a menu refreshes its input queue.
-        var eligible = cursor is Point point && !HoverInput.AnyMouseButtonDown(GetAsyncKeyState) &&
-            Bounds.Contains(point) && IsClockExposedAt(point);
-        UpdatePacificHover(eligible, Environment.TickCount64);
+        var pointer = HoverInput.SamplePointer(cursor, () => HoverInput.AnyMouseButtonDown(GetAsyncKeyState),
+            point => Bounds.Contains(point), IsClockExposedAt);
+        if (_hoverDebug.Enabled) _hoverDebugPointerState = pointer;
+        UpdatePacificHover(pointer.Eligible, Environment.TickCount64);
     }
 
     private void SetPacificHover(bool enabled)
@@ -1252,6 +1254,10 @@ internal sealed class ClockForm : Form
         // Exclude timestamps and cursor coordinates from the state key so a
         // stationary state writes at most once a second, even while moving.
         var state = $"pointerEligible={_hoverDebugPointerEligible?.ToString() ?? "unknown"} " +
+            $"cursorAvailable={(_hoverDebugPointerState is { } pointer ? pointer.Cursor.HasValue.ToString() : "not-evaluated")} " +
+            $"mouseButtonsReleased={_hoverDebugPointerState?.MouseButtonsReleased?.ToString() ?? "not-evaluated"} " +
+            $"insideBounds={_hoverDebugPointerState?.InsideBounds?.ToString() ?? "not-evaluated"} " +
+            $"clockExposed={_hoverDebugPointerState?.Exposed?.ToString() ?? "not-evaluated"} " +
             $"notDisposed={!_isDisposed} notAllowClose={!_allowClose} Visible={Visible} IsHandleCreated={IsHandleCreated} " +
             $"notDragging={!_isDragging} notLoadingPosition={!_isLoadingPosition} displayTimerStopped={!_displayTimer.Enabled} " +
             $"menuNotVisible={!_menu.Visible} notHiddenByUser={!_hiddenByUser} notHiddenByFullscreen={!_hiddenByFullscreen} " +
@@ -1260,7 +1266,7 @@ internal sealed class ClockForm : Form
         _hoverDebug.State("hover", state, () =>
             $"source={source} eligible={eligible?.ToString() ?? "not-evaluated"} " +
             $"lastPollAgeMs={(_hoverDebugLastPoll is long last ? (Environment.TickCount64 - last).ToString() : "never")} " +
-            $"clockBounds={Bounds} " +
+            $"cursorPosition={_hoverDebugPointerState?.Cursor?.ToString() ?? "unavailable"} clockBounds={Bounds} " +
             (_hoverDebugBlocker != IntPtr.Zero ? $"blockerDetails=({HoverDebugLog.DescribeWindow(_hoverDebugBlocker)})" : string.Empty));
     }
 
