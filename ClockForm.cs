@@ -36,6 +36,8 @@ internal sealed class ClockForm : Form
     private const uint MonitorDefaultToNearest = 0x00000002;
     private const int ForegroundReassertDelay = 150;
     private const uint GwOwner = 4;
+    private const uint GwHwndPrev = 3;
+    private const uint GaRoot = 2;
     private const string CoreWindowClass = "Windows.UI.Core.CoreWindow";
 
     private static readonly CultureInfo DisplayCulture = CultureInfo.InvariantCulture;
@@ -78,12 +80,14 @@ internal sealed class ClockForm : Form
     private readonly System.Windows.Forms.Timer _reassertTimer;
     private readonly System.Windows.Forms.Timer _hoverTimer;
     private readonly HoverPreviewState _hoverState = new();
+    private readonly HoverTrace _hoverTrace;
     private readonly Func<Point?> _readCursorPosition;
     private PacificTimeCard? _pacificCard;
     private readonly TimeZoneInfo? _pacificTimeZone;
     private readonly WinEventDelegate _foregroundChangedCallback;
     private IntPtr _foregroundHook;
     private IntPtr _frameworkOwner;
+    private IntPtr _lastPointerTarget;
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _trayIcon;
     private readonly ContextMenuStrip _menu;
@@ -117,6 +121,7 @@ internal sealed class ClockForm : Form
         _settings = settings;
         _persistSettings = persistSettings;
         _readCursorPosition = readCursorPosition ?? ReadCursorPosition;
+        _hoverTrace = new HoverTrace(HoverTrace.WriteToDefaultLog);
         _clickThrough = _settings.ClickThrough;
         _beijingTimeZone = FindBeijingTimeZone();
         try
@@ -1179,9 +1184,13 @@ internal sealed class ClockForm : Form
         // GetKeyState/Control.MouseButtons is the last state delivered to this
         // thread, not the current physical state. A no-activate background
         // window can retain "pressed" until a menu refreshes its input queue.
-        var eligible = cursor is Point point && !HoverInput.AnyMouseButtonDown(GetAsyncKeyState) &&
-            Bounds.Contains(point) && IsClockExposedAt(point);
-        UpdatePacificHover(eligible, Environment.TickCount64);
+        var buttonDown = HoverInput.AnyMouseButtonDown(GetAsyncKeyState);
+        var inside = cursor is Point point && Bounds.Contains(point);
+        var exposed = inside && IsClockExposedAt(cursor.GetValueOrDefault());
+        var now = Environment.TickCount64;
+        UpdatePacificHover(inside && !buttonDown && exposed, now);
+        _hoverTrace.Observe(inside && !buttonDown && !_menu.Visible && !_isDragging,
+            _pacificCard?.Visible == true, now, () => DescribeHoverState(cursor, buttonDown, exposed));
     }
 
     private void SetPacificHover(bool enabled)
@@ -1223,19 +1232,100 @@ internal sealed class ClockForm : Form
 
     private bool IsClockExposedAt(Point cursor)
     {
+        _lastPointerTarget = IntPtr.Zero;
         if (!IsHandleCreated) return false;
-        // WindowFromPoint skips cross-process click-through windows. Walk only
-        // the windows above ours so previews cannot appear through another app.
-        for (var window = GetWindow(Handle, 3); window != IntPtr.Zero; window = GetWindow(window, 3))
+        // Ask Windows which top-level window the pointer would actually reach.
+        // Hit testing already ignores hidden, cloaked, click-through and fully
+        // transparent layered windows; scanning every window rectangle above
+        // the clock counted such invisible overlays as covering it forever.
+        var hit = WindowFromPoint(new NativePoint { X = cursor.X, Y = cursor.Y });
+        var target = hit == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hit, GaRoot);
+        _lastPointerTarget = target;
+        var card = _pacificCard?.IsHandleCreated == true ? _pacificCard.Handle : IntPtr.Zero;
+        return HoverOcclusion.IsExposed(target, Handle, card, IsAboveClock);
+    }
+
+    private bool IsAboveClock(IntPtr window)
+    {
+        var above = GetWindow(Handle, GwHwndPrev);
+        for (var steps = 0; above != IntPtr.Zero && steps < 4096; steps++)
         {
-            if (_pacificCard?.IsHandleCreated == true && window == _pacificCard.Handle) continue;
-            if (!IsWindowVisible(window) || IsIconic(window) ||
-                (DwmGetWindowAttribute(window, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) ||
-                !GetWindowRect(window, out var bounds)) continue;
-            if (cursor.X >= bounds.Left && cursor.X < bounds.Right && cursor.Y >= bounds.Top && cursor.Y < bounds.Bottom)
-                return false;
+            if (above == window) return true;
+            above = GetWindow(above, GwHwndPrev);
         }
-        return true;
+
+        return false;
+    }
+
+    private string DescribeHoverState(Point? cursor, bool buttonDown, bool exposed)
+    {
+        var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _beijingTimeZone);
+        var version = typeof(ClockForm).Assembly.GetName().Version?.ToString(3) ?? "?";
+        var text = new StringBuilder();
+        text.Append(now.ToString("yyyy-MM-dd HH:mm:ss", DisplayCulture)).Append(" (UTC+8) v").Append(version);
+        text.Append(" | pointer rested on the clock without a preview");
+        text.Append(" | cursor=").Append(cursor is Point p ? $"{p.X},{p.Y}" : "unavailable");
+        text.Append(" bounds=").Append(Bounds);
+        text.Append(" buttonDown=").Append(buttonDown);
+        text.Append(" exposed=").Append(exposed);
+        text.Append(" topMost=").Append(_settings.TopMost);
+        text.Append(" clickThrough=").Append(_clickThrough);
+        text.Append(" blockers=[").Append(HoverFormBlockers()).Append(']');
+        if (_lastPointerTarget != IntPtr.Zero)
+        {
+            text.Append(" pointerTarget=").Append(DescribeWindow(_lastPointerTarget));
+            text.Append(" aboveClock=").Append(IsAboveClock(_lastPointerTarget));
+        }
+
+        return text.ToString();
+    }
+
+    private string HoverFormBlockers()
+    {
+        var blockers = new List<string>();
+        if (_isDisposed) blockers.Add("disposed");
+        if (_allowClose) blockers.Add("closing");
+        if (!Visible) blockers.Add("hidden");
+        if (!IsHandleCreated) blockers.Add("noHandle");
+        if (_isDragging) blockers.Add("dragging");
+        if (_isLoadingPosition) blockers.Add("loadingPosition");
+        if (_displayTimer.Enabled) blockers.Add("displayLayoutPending");
+        if (_menu.Visible) blockers.Add("menuOpen");
+        if (_hiddenByUser) blockers.Add("hiddenByUser");
+        if (_hiddenByFullscreen) blockers.Add("hiddenByFullscreen");
+        if (!_settings.ShowPacificTimeOnHover) blockers.Add("previewOff");
+        if (_pacificTimeZone is null) blockers.Add("noPacificZone");
+        return string.Join(',', blockers);
+    }
+
+    private static string DescribeWindow(IntPtr window)
+    {
+        var description = new StringBuilder($"0x{window.ToInt64():X} class={GetWindowClassName(window)}");
+        GetWindowThreadProcessId(window, out var processId);
+        if (processId != 0)
+        {
+            try
+            {
+                using var process = Process.GetProcessById((int)processId);
+                description.Append(" process=").Append(process.ProcessName);
+            }
+            catch (ArgumentException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+            }
+        }
+
+        if (GetWindowRect(window, out var rect))
+        {
+            description.Append($" rect={rect.Left},{rect.Top},{rect.Right},{rect.Bottom}");
+        }
+
+        return description.ToString();
     }
 
     [DllImport("user32.dll")]
@@ -1244,8 +1334,11 @@ internal sealed class ClockForm : Form
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int virtualKey);
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
     private static Icon CreateTrayIcon()
     {
