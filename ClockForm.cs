@@ -78,6 +78,10 @@ internal sealed class ClockForm : Form
     private readonly System.Windows.Forms.Timer _reassertTimer;
     private readonly System.Windows.Forms.Timer _hoverTimer;
     private readonly HoverPreviewState _hoverState = new();
+    private readonly HoverDebugLog _hoverDebug = new();
+    private IntPtr _hoverDebugBlocker;
+    private bool? _hoverDebugPointerEligible;
+    private long? _hoverDebugLastPoll;
     private readonly Func<Point?> _readCursorPosition;
     private PacificTimeCard? _pacificCard;
     private readonly TimeZoneInfo? _pacificTimeZone;
@@ -178,6 +182,7 @@ internal sealed class ClockForm : Form
             }
             AttachToTaskbar();
             KeepAboveTaskbar();
+            LogHoverState("clock-heartbeat");
         };
 
         // This short poll only runs when the user enables fullscreen hiding.
@@ -210,6 +215,7 @@ internal sealed class ClockForm : Form
         // not receive MouseEnter/MouseLeave. No global mouse hook is installed.
         _hoverTimer = new System.Windows.Forms.Timer { Interval = 100 };
         _hoverTimer.Tick += (_, _) => PollPacificHover();
+        _hoverDebug.State("session", $"started version={Application.ProductVersion}");
 
         // Out-of-context WinEvents are delivered on this UI thread's message loop.
         // Keep the delegate in a field so the GC cannot collect it while hooked.
@@ -337,12 +343,14 @@ internal sealed class ClockForm : Form
             ResetPacificPreview();
             _isDragging = true;
             _displayTimer.Stop();
+            _hoverDebug.State("drag", "isDragging=True WM_ENTERSIZEMOVE");
         }
 
         if (message.Msg == WmExitSizeMove)
         {
             base.WndProc(ref message);
             _isDragging = false;
+            _hoverDebug.State("drag", "isDragging=False WM_EXITSIZEMOVE");
             RememberDraggedPosition();
             return;
         }
@@ -403,9 +411,12 @@ internal sealed class ClockForm : Form
         menu.RenderMode = ToolStripRenderMode.System;
         menu.Opening += (_, _) =>
         {
+            _hoverDebug.State("menu", "opening");
             ResetPacificPreview();
             RefreshMenuChecks();
         };
+        menu.Opened += (_, _) => _hoverDebug.State("menu", "opened");
+        menu.Closed += (_, e) => _hoverDebug.State("menu", $"closed reason={e.CloseReason}");
 
         var toggleItem = new ToolStripMenuItem("显示 / 隐藏");
         toggleItem.Click += (_, _) => ToggleVisibility();
@@ -592,6 +603,8 @@ internal sealed class ClockForm : Form
             return;
         }
 
+        _hoverDebug.State("foreground", $"hwnd=0x{window.ToInt64():X}",
+            () => $"eventTime={eventTime} {HoverDebugLog.DescribeWindow(window)}");
         if (_settings.HideWhenFullscreen)
         {
             UpdateFullscreenVisibility();
@@ -1137,6 +1150,7 @@ internal sealed class ClockForm : Form
 
         SaveSettings();
         _isDisposed = true;
+        LogHoverState("disposing");
         SystemEvents.DisplaySettingsChanged -= HandleDisplaySettingsChanged;
         if (_foregroundHook != IntPtr.Zero)
         {
@@ -1166,6 +1180,7 @@ internal sealed class ClockForm : Form
     {
         if (_isDisposed) return;
         _hoverTimer.Enabled = Visible && _settings.ShowPacificTimeOnHover && _pacificTimeZone is not null;
+        LogHoverState("refresh-timer");
     }
 
     private static Point? ReadCursorPosition()
@@ -1175,6 +1190,11 @@ internal sealed class ClockForm : Form
 
     private void PollPacificHover()
     {
+        if (_hoverDebug.Enabled)
+        {
+            _hoverDebugBlocker = IntPtr.Zero;
+            _hoverDebugLastPoll = Environment.TickCount64;
+        }
         var cursor = _readCursorPosition();
         // GetKeyState/Control.MouseButtons is the last state delivered to this
         // thread, not the current physical state. A no-activate background
@@ -1204,6 +1224,11 @@ internal sealed class ClockForm : Form
         var eligible = pointerEligible && !_isDisposed && !_allowClose && Visible && IsHandleCreated &&
             !_isDragging && !_isLoadingPosition && !_displayTimer.Enabled && !_menu.Visible &&
             !_hiddenByUser && !_hiddenByFullscreen && _settings.ShowPacificTimeOnHover && _pacificTimeZone is not null;
+        if (_hoverDebug.Enabled)
+        {
+            _hoverDebugPointerEligible = pointerEligible;
+            LogHoverState("update", eligible);
+        }
         if (!_hoverState.Update(eligible, timestamp))
         {
             _pacificCard?.Hide();
@@ -1221,6 +1246,24 @@ internal sealed class ClockForm : Form
         _pacificCard.Show(this);
     }
 
+    private void LogHoverState(string source, bool? eligible = null)
+    {
+        if (!_hoverDebug.Enabled) return;
+        // Exclude timestamps and cursor coordinates from the state key so a
+        // stationary state writes at most once a second, even while moving.
+        var state = $"pointerEligible={_hoverDebugPointerEligible?.ToString() ?? "unknown"} " +
+            $"notDisposed={!_isDisposed} notAllowClose={!_allowClose} Visible={Visible} IsHandleCreated={IsHandleCreated} " +
+            $"notDragging={!_isDragging} notLoadingPosition={!_isLoadingPosition} displayTimerStopped={!_displayTimer.Enabled} " +
+            $"menuNotVisible={!_menu.Visible} notHiddenByUser={!_hiddenByUser} notHiddenByFullscreen={!_hiddenByFullscreen} " +
+            $"ShowPacificTimeOnHover={_settings.ShowPacificTimeOnHover} hasPacificTimeZone={_pacificTimeZone is not null} " +
+            $"hoverTimerEnabled={_hoverTimer.Enabled} cardVisible={_pacificCard?.Visible == true} blocker=0x{_hoverDebugBlocker.ToInt64():X}";
+        _hoverDebug.State("hover", state, () =>
+            $"source={source} eligible={eligible?.ToString() ?? "not-evaluated"} " +
+            $"lastPollAgeMs={(_hoverDebugLastPoll is long last ? (Environment.TickCount64 - last).ToString() : "never")} " +
+            $"clockBounds={Bounds} " +
+            (_hoverDebugBlocker != IntPtr.Zero ? $"blockerDetails=({HoverDebugLog.DescribeWindow(_hoverDebugBlocker)})" : string.Empty));
+    }
+
     private bool IsClockExposedAt(Point cursor)
     {
         if (!IsHandleCreated) return false;
@@ -1233,7 +1276,10 @@ internal sealed class ClockForm : Form
                 (DwmGetWindowAttribute(window, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) ||
                 !GetWindowRect(window, out var bounds)) continue;
             if (cursor.X >= bounds.Left && cursor.X < bounds.Right && cursor.Y >= bounds.Top && cursor.Y < bounds.Bottom)
+            {
+                if (_hoverDebug.Enabled) _hoverDebugBlocker = window;
                 return false;
+            }
         }
         return true;
     }

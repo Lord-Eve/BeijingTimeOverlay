@@ -25,6 +25,7 @@ internal static class Program
             TestLayouts();
             TestPositions();
             TestPacificPreview();
+            TestHoverDebugGate();
 
             Console.WriteLine($"PASS: {_assertions} assertions; live-ui={liveUi}");
             return 0;
@@ -155,6 +156,20 @@ internal static class Program
             Check(graphics.MeasureString("23:59:59", timeFont, PointF.Empty, format).Width <= width, "Preview time fits");
             Check(78 * dpi / 96f + label.GetHeight(graphics) < bitmap.Height - 2, "Preview footer does not clip");
         }
+    }
+
+    private static void TestHoverDebugGate()
+    {
+        var gate = new HoverDebugGate();
+        Check(gate.ShouldWrite("hover", "blocked", 1000), "First diagnostic snapshot is logged");
+        for (var now = 1100; now < 2000; now += 100)
+            Check(!gate.ShouldWrite("hover", "blocked", now), "Unchanged 100ms polls do not write again");
+        Check(gate.ShouldWrite("hover", "blocked", 2000), "Unchanged state has a one-second heartbeat");
+        Check(gate.ShouldWrite("hover", "eligible", 2001), "Brief eligibility transitions are not throttled away");
+        Check(gate.ShouldWrite("hover", "blocked", 2002), "Brief resets remain visible in the timeline");
+        Check(gate.ShouldWrite("menu", "opened", 2002), "Menu events are independent of hover snapshots");
+        Check(!gate.ShouldWrite("hover", "blocked", 3001), "Transition restarts unchanged-state interval");
+        Check(gate.ShouldWrite("hover", "blocked", 3002), "Heartbeat resumes one second after transition");
     }
 
     private static void TestPositions()

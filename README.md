@@ -38,6 +38,24 @@
 
 ## 维护者发布流程
 
+### 悬停诊断
+
+诊断默认关闭。排查“悬停显示太平洋时间”偶发不弹出时，先通过托盘菜单退出已有浮窗，再在项目目录的 PowerShell 中启动已发布的诊断版本：
+
+```powershell
+$env:BTO_HOVER_DEBUG = '1'
+Start-Process .\发布\BeijingTimeOverlay.exe
+Remove-Item Env:BTO_HOVER_DEBUG
+```
+
+源码有改动时先运行 `发布到本地.cmd` 部署；也可在设置上述环境变量后运行它，新进程会继承诊断开关。重复启动只会唤醒旧进程，不能给已经运行的进程开启诊断。该开关不会保存到设置或开机启动项中；退出诊断进程、正常启动即可关闭。
+
+日志在 `%LOCALAPPDATA%\BeijingTimeOverlay\hover-debug.log`，使用 UTF-8、带时区的时间戳和进程号，追加写入。相同状态每秒最多记录一次，状态变化立即记录。内容包含每个悬停条件、定时器状态、最近轮询间隔，以及遮挡窗口的句柄、类名、标题、进程名、矩形、扩展样式和可获取的分层 alpha；分层属性 API 失败时记为 `unavailable`，不能据此认定窗口不透明。
+
+复现时先保持原有桌宠和浮层运行，直接悬停数秒；出现故障后，再打开并关闭右键菜单、切回桌面并重新悬停，对照故障与恢复两段日志。记录大致发生时间，便于定位。日志含其他窗口标题和进程名，分享时可只提供相关时间段。
+
+### 发布版本
+
 无需额外测试框架，运行 `dotnet run --project .\tests\BeijingTimeOverlay.Tests -c Release` 可执行缩放、文字排版及显示器位置回归测试。加上 `-- --live-ui` 可在独立非输入桌面执行实际双屏 DPI 与窗口生命周期检查，不改变显示模式或用户设置。
 
 更新 `.csproj` 中的版本号和 `CHANGELOG.md` 后，将对应的 `vMAJOR.MINOR.PATCH` tag 推送到 GitHub。GitHub Actions 会校验 tag、项目版本和变更记录，构建 Windows x64 自包含（开启压缩）和依赖框架两种单文件程序，分别生成 ZIP 与 SHA-256 校验文件，验证上传资产后发布 GitHub Release。已发布版本保留为历史快照，不覆盖旧 tag 或旧资产。
