@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-19
+
+### 修复
+
+- 修复后台运行或登录自启后，直接悬停可能不显示太平洋时间、必须先打开并关闭右键菜单才恢复的问题：改用实时物理鼠标按键状态，不再依赖窗口线程缓存的输入状态。
+
 ## [1.2.0] - 2026-10-19
 
 ### 新增
@@ -84,7 +90,8 @@
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
 
-[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.2...v1.1.3

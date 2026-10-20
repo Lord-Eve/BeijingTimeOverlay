@@ -2,6 +2,22 @@ using System.Globalization;
 
 namespace BeijingTimeOverlay;
 
+internal static class HoverInput
+{
+    private static readonly int[] MouseKeys = { 1, 2, 4, 5, 6 };
+
+    public static bool AnyMouseButtonDown(Func<int, short> readAsyncKeyState)
+    {
+        foreach (var key in MouseKeys)
+        {
+            // Only the high bit means currently held. The low (historical)
+            // bit is unreliable and must not suppress background hovering.
+            if ((readAsyncKeyState(key) & 0x8000) != 0) return true;
+        }
+        return false;
+    }
+}
+
 // No window or wall-clock dependency: hover timing uses a monotonic timestamp.
 internal sealed class HoverPreviewState
 {

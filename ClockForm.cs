@@ -78,6 +78,7 @@ internal sealed class ClockForm : Form
     private readonly System.Windows.Forms.Timer _reassertTimer;
     private readonly System.Windows.Forms.Timer _hoverTimer;
     private readonly HoverPreviewState _hoverState = new();
+    private readonly Func<Point?> _readCursorPosition;
     private PacificTimeCard? _pacificCard;
     private readonly TimeZoneInfo? _pacificTimeZone;
     private readonly WinEventDelegate _foregroundChangedCallback;
@@ -110,10 +111,12 @@ internal sealed class ClockForm : Form
     {
     }
 
-    internal ClockForm(OverlaySettings settings, Action<OverlaySettings> persistSettings)
+    internal ClockForm(OverlaySettings settings, Action<OverlaySettings> persistSettings,
+        Func<Point?>? readCursorPosition = null)
     {
         _settings = settings;
         _persistSettings = persistSettings;
+        _readCursorPosition = readCursorPosition ?? ReadCursorPosition;
         _clickThrough = _settings.ClickThrough;
         _beijingTimeZone = FindBeijingTimeZone();
         try
@@ -206,13 +209,7 @@ internal sealed class ClockForm : Form
         // Coordinate polling also works when layered click-through windows do
         // not receive MouseEnter/MouseLeave. No global mouse hook is installed.
         _hoverTimer = new System.Windows.Forms.Timer { Interval = 100 };
-        _hoverTimer.Tick += (_, _) =>
-        {
-            var eligible = GetCursorPos(out var point) && Control.MouseButtons == MouseButtons.None;
-            var cursor = new Point(point.X, point.Y);
-            eligible = eligible && Bounds.Contains(cursor) && IsClockExposedAt(cursor);
-            UpdatePacificHover(eligible, Environment.TickCount64);
-        };
+        _hoverTimer.Tick += (_, _) => PollPacificHover();
 
         // Out-of-context WinEvents are delivered on this UI thread's message loop.
         // Keep the delegate in a field so the GC cannot collect it while hooked.
@@ -1171,6 +1168,22 @@ internal sealed class ClockForm : Form
         _hoverTimer.Enabled = Visible && _settings.ShowPacificTimeOnHover && _pacificTimeZone is not null;
     }
 
+    private static Point? ReadCursorPosition()
+    {
+        return GetCursorPos(out var point) ? new Point(point.X, point.Y) : null;
+    }
+
+    private void PollPacificHover()
+    {
+        var cursor = _readCursorPosition();
+        // GetKeyState/Control.MouseButtons is the last state delivered to this
+        // thread, not the current physical state. A no-activate background
+        // window can retain "pressed" until a menu refreshes its input queue.
+        var eligible = cursor is Point point && !HoverInput.AnyMouseButtonDown(GetAsyncKeyState) &&
+            Bounds.Contains(point) && IsClockExposedAt(point);
+        UpdatePacificHover(eligible, Environment.TickCount64);
+    }
+
     private void SetPacificHover(bool enabled)
     {
         _settings.ShowPacificTimeOnHover = enabled;
@@ -1227,6 +1240,9 @@ internal sealed class ClockForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);

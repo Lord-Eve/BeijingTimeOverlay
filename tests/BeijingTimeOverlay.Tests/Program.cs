@@ -94,6 +94,13 @@ internal static class Program
 
     private static void TestPacificPreview()
     {
+        Check(!HoverInput.AnyMouseButtonDown(_ => 0), "Released physical buttons permit hovering");
+        Check(!HoverInput.AnyMouseButtonDown(_ => 1), "Historical pressed bit does not block hovering");
+        foreach (var button in new[] { 1, 2, 4, 5, 6 })
+        {
+            Check(HoverInput.AnyMouseButtonDown(key => key == button ? unchecked((short)0x8000) : (short)0),
+                $"Physical button {button} suppresses preview while held");
+        }
         var state = new HoverPreviewState();
         Check(!state.Update(true, 1000), "Hover entry waits");
         Check(!state.Update(true, 1299), "Brief pass does not show preview");
@@ -203,7 +210,7 @@ internal static class Program
         kickoff.Tick += (_, _) =>
         {
             kickoff.Stop();
-            try { TestLiveClock(); }
+            try { TestDirectHoverBeforeMenu(); TestLiveClock(); }
             catch (Exception exception) { failure = exception; }
             finally { context.ExitThread(); }
         };
@@ -352,6 +359,62 @@ internal static class Program
             Console.WriteLine($"Live displays: {Screen.AllScreens.Length}; settings writes isolated: {writes}");
             Call(clock, "ExitApplication");
             Pump(50);
+        }
+    }
+
+    private static void TestDirectHoverBeforeMenu()
+    {
+        // Inject only cursor coordinates on this non-input desktop. Button
+        // reads still use the real production path; never move the user's mouse.
+        ClockForm? clock = null;
+        Point? cursor = null;
+        var settings = new OverlaySettings { TopMost = false };
+        using (clock = new ClockForm(settings, _ => { }, () => cursor))
+        {
+            clock.Show();
+            Pump(400);
+            var hoverTimer = (System.Windows.Forms.Timer)typeof(ClockForm)
+                .GetField("_hoverTimer", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(clock)!;
+            hoverTimer.Stop();
+            var keyboard = new byte[256];
+            Check(GetKeyboardState(keyboard), "Read isolated thread input state");
+            try
+            {
+                var stale = (byte[])keyboard.Clone();
+                stale[1] = 0x80; // Thread thinks the left button is still down.
+                Check(SetKeyboardState(stale), "Simulate stale background-thread mouse state");
+                Check((Control.MouseButtons & MouseButtons.Left) != 0, "Legacy MouseButtons reads stale pressed state");
+                cursor = new Point(clock.Left + clock.Width / 2, clock.Top + clock.Height / 2);
+                Call(clock, "PollPacificHover");
+                Thread.Sleep(350); // Preserve the stale thread snapshot; no user input.
+                Call(clock, "PollPacificHover");
+                var card = (PacificTimeCard?)typeof(ClockForm)
+                    .GetField("_pacificCard", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(clock);
+                Check(card?.Visible == true, "Direct hover works before any menu despite stale thread button state");
+                cursor = null;
+                Call(clock, "PollPacificHover");
+                Check(!card!.Visible, "Unavailable input desktop/cursor dismisses preview");
+                SetKeyboardState(keyboard);
+                cursor = new Point(clock.Left + clock.Width / 2, clock.Top + clock.Height / 2);
+                hoverTimer.Start();
+                Pump(750);
+                Check(card.Visible, "Real hover timer opens preview without visiting a menu");
+                cursor = null;
+                Pump(150);
+                Check(!card.Visible, "Real hover timer dismisses preview after departure");
+                Call(clock, "SetClickThrough", true);
+                Pump(350);
+                cursor = new Point(clock.Left + clock.Width / 2, clock.Top + clock.Height / 2);
+                Pump(750);
+                Check(card.Visible, "Direct timer hover works after click-through recreation without menu activation");
+            }
+            finally
+            {
+                SetKeyboardState(keyboard);
+                // Keep the harness's outer message loop alive for the rest
+                // of the suite; production ExitApplication exits that loop.
+                Call(clock, "DisposeResources");
+            }
         }
     }
 
@@ -543,6 +606,8 @@ internal static class Program
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool GetKeyboardState([Out] byte[] state);
+    [DllImport("user32.dll")] private static extern bool SetKeyboardState(byte[] state);
     [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
     [DllImport("shcore.dll")] private static extern int GetScaleFactorForMonitor(IntPtr monitor, out int scale);
     [DllImport("shcore.dll")] private static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x, out uint y);
