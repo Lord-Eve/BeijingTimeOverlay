@@ -6,6 +6,15 @@ namespace BeijingTimeOverlay;
 // Display-only owned window. It must never activate or intercept taskbar clicks.
 internal sealed class PacificTimeCard : Form
 {
+    private const uint GwOwner = 4;
+    private const int GwlpHwndParent = -8;
+    private const int GwlExStyle = -20;
+    private const int WsExTopmost = 0x00000008;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoActivate = 0x0010;
+    private static readonly IntPtr HwndTopmost = new(-1);
+
     private Font _labelFont = null!;
     private Font _timeFont = null!;
     private int _dpi;
@@ -17,6 +26,9 @@ internal sealed class PacificTimeCard : Form
         AccessibleName = Text;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
+        // A hover-only preview is a tooltip: its layer must not depend on the
+        // clock's TopMost preference. Eligibility still controls when it shows.
+        TopMost = true;
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.None;
         DoubleBuffered = true;
@@ -28,31 +40,29 @@ internal sealed class PacificTimeCard : Form
 
     public void ShowFor(Form clock)
     {
-        TopMost = clock.TopMost;
-        Show(clock);
+        if (!Visible) Show(clock);
         SynchronizeWindowOrder(clock);
     }
 
     public void SynchronizeWindowOrder(Form clock)
     {
         if (!IsHandleCreated || !clock.IsHandleCreated) return;
-        var topMost = clock.TopMost;
-        if (TopMost != topMost) TopMost = topMost;
 
         // WinForms can replace a hidden tool window's native owner. Compare
         // native state as well as managed properties: Visible can remain true
         // while an unowned, non-topmost preview sits underneath normal apps.
-        var ownerChanged = GetWindow(Handle, 4) != clock.Handle;
+        var ownerChanged = GetWindow(Handle, GwOwner) != clock.Handle;
         if (ownerChanged)
         {
-            if (IntPtr.Size == 8) SetWindowLongPtr64(Handle, -8, clock.Handle);
-            else SetWindowLong32(Handle, -8, clock.Handle.ToInt32());
+            if (IntPtr.Size == 8) SetWindowLongPtr64(Handle, GwlpHwndParent, clock.Handle);
+            else SetWindowLong32(Handle, GwlpHwndParent, clock.Handle.ToInt32());
         }
-        var style = IntPtr.Size == 8 ? GetWindowLongPtr64(Handle, -20).ToInt64() : GetWindowLong32(Handle, -20);
-        if (ownerChanged || ((style & 0x08) != 0) != topMost)
+        var style = IntPtr.Size == 8 ? GetWindowLongPtr64(Handle, GwlExStyle).ToInt64() : GetWindowLong32(Handle, GwlExStyle);
+        if (ownerChanged || (style & WsExTopmost) == 0)
         {
-            SetWindowPos(Handle, new IntPtr(topMost ? -1 : -2), 0, 0, 0, 0,
-                0x0001 | 0x0002 | 0x0010); // NOSIZE | NOMOVE | NOACTIVATE
+            // Never use HWND_NOTOPMOST on an owned preview: demotion can
+            // propagate through the owner chain to the clock or taskbar.
+            SetWindowPos(Handle, HwndTopmost, 0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoActivate);
         }
     }
 

@@ -551,31 +551,51 @@ internal static class Program
         Check(!card.ShowInTaskbar && Screen.FromHandle(clock.Handle).WorkingArea.Contains(card.Bounds), "Preview stays in work area");
         Check(clock.ClientSize == clockSize, "Preview leaves main clock geometry unchanged");
         Check(card.ClientSize == OverlayGeometry.PacificCardSize(MonitorDpi(clock.Handle)), "Live preview follows anchor monitor DPI");
-        foreach (var topMost in new[] { true, false })
+        var originalTopMost = clock.TopMost;
+        try
         {
-            Call(clock, "SetTopMost", topMost);
-            ShowPreview();
-            Check(card.TopMost == topMost && ((GetWindowLong(card.Handle, -20) & 0x08) != 0) == topMost,
-                "Preview initially follows the clock's topmost setting");
-            var clockOwner = GetWindow(clock.Handle, 4);
-            var clockStyle = GetWindowLong(clock.Handle, -20);
-            var cardBounds = card.Bounds;
-            // Reproduce the captured fault: managed Visible/TopMost stay set,
-            // but native ownership and z-order no longer match the anchor.
-            SetTestWindowOwner(card.Handle, IntPtr.Zero);
-            Check(SetWindowPos(card.Handle, new IntPtr(topMost ? -2 : -1), 0, 0, 0, 0, 0x0013),
-                "Can simulate native preview layer drift without hiding or activating it");
-            Check(card.Visible && ((GetWindowLong(card.Handle, -20) & 0x08) != 0) != topMost,
-                "Captured fault keeps the card logically visible in the wrong z-order band");
-            clock.UpdatePacificHover(true, 1800);
-            Check(GetWindow(card.Handle, 4) == clock.Handle, "Stationary hover restores lost native preview owner");
-            Check(((GetWindowLong(card.Handle, -20) & 0x08) != 0) == topMost,
-                "Stationary hover repairs native layer drift, including non-topmost mode");
-            Check(card.Bounds == cardBounds && GetForegroundWindow() == foreground,
-                "Preview repair preserves geometry and foreground focus");
-            Check(GetWindow(clock.Handle, 4) == clockOwner && GetWindowLong(clock.Handle, -20) == clockStyle,
-                "Preview repair leaves the main clock's native owner and style unchanged");
+            foreach (var topMost in new[] { true, false })
+            {
+                Call(clock, "SetTopMost", topMost);
+                var clockOwner = GetWindow(clock.Handle, 4);
+                var clockStyle = GetWindowLong(clock.Handle, -20);
+                ShowPreview();
+                Check(card.TopMost && (GetWindowLong(card.Handle, -20) & 0x08) != 0,
+                    "Preview shows as a topmost tooltip with either clock setting");
+                Check(GetWindow(clock.Handle, 4) == clockOwner && GetWindowLong(clock.Handle, -20) == clockStyle,
+                    "Showing a topmost tooltip does not promote or reparent the clock");
+                var cardBounds = card.Bounds;
+                // Lose ownership and sink into the normal band, exactly as in
+                // the captured fault, even when the clock is not topmost.
+                SetTestWindowOwner(card.Handle, IntPtr.Zero);
+                Check(SetWindowPos(card.Handle, new IntPtr(-2), 0, 0, 0, 0, 0x0013),
+                    "Can simulate native preview layer drift without hiding or activating it");
+                Check(card.Visible && (GetWindowLong(card.Handle, -20) & 0x08) == 0,
+                    "Captured fault keeps the card logically visible in the normal band");
+                var cover = CreateWindowEx(0x08000080, "STATIC", "Ordinary preview cover", 0x90000000,
+                    cardBounds.X, cardBounds.Y, cardBounds.Width, cardBounds.Height,
+                    IntPtr.Zero, IntPtr.Zero, GetModuleHandle(null), IntPtr.Zero);
+                if (cover == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                try
+                {
+                    Check(SetWindowPos(cover, IntPtr.Zero, 0, 0, 0, 0, 0x0013) && IsWindowAbove(cover, card.Handle),
+                        "An ordinary non-topmost window actually covers the faulty preview");
+                    clock.UpdatePacificHover(true, 1800);
+                    Check(GetWindow(card.Handle, 4) == clock.Handle, "Stationary hover restores lost native preview owner");
+                    Check((GetWindowLong(card.Handle, -20) & 0x08) != 0 && IsWindowAbove(card.Handle, cover),
+                        "Stationary hover raises preview above the ordinary cover in both clock modes");
+                    Check(card.Bounds == cardBounds && GetForegroundWindow() == foreground,
+                        "Preview repair preserves geometry and foreground focus");
+                    Check(GetWindow(clock.Handle, 4) == clockOwner && GetWindowLong(clock.Handle, -20) == clockStyle,
+                        "Preview repair leaves the main clock's native owner and style unchanged");
+                }
+                finally { DestroyWindow(cover); }
+            }
         }
+        finally { Call(clock, "SetTopMost", originalTopMost); }
+        Check(clock.TopMost == originalTopMost && settings.TopMost == originalTopMost &&
+              ((GetWindowLong(clock.Handle, -20) & 0x08) != 0) == originalTopMost,
+            "Layer tests restore the original clock mode for subsequent interaction and DPI tests");
         using (var image = new Bitmap(card.Width, card.Height))
         {
             card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"),
@@ -660,6 +680,13 @@ internal static class Program
     {
         if (IntPtr.Size == 8) SetWindowLongPtr64(window, -8, owner);
         else SetWindowLong32(window, -8, owner.ToInt32());
+    }
+
+    private static bool IsWindowAbove(IntPtr window, IntPtr other)
+    {
+        for (var above = GetWindow(other, 3); above != IntPtr.Zero; above = GetWindow(above, 3))
+            if (above == window) return true;
+        return false;
     }
 
     private static int RunOnPrivateDesktop()
