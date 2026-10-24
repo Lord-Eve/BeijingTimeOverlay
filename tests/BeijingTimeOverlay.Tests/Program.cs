@@ -551,6 +551,31 @@ internal static class Program
         Check(!card.ShowInTaskbar && Screen.FromHandle(clock.Handle).WorkingArea.Contains(card.Bounds), "Preview stays in work area");
         Check(clock.ClientSize == clockSize, "Preview leaves main clock geometry unchanged");
         Check(card.ClientSize == OverlayGeometry.PacificCardSize(MonitorDpi(clock.Handle)), "Live preview follows anchor monitor DPI");
+        foreach (var topMost in new[] { true, false })
+        {
+            Call(clock, "SetTopMost", topMost);
+            ShowPreview();
+            Check(card.TopMost == topMost && ((GetWindowLong(card.Handle, -20) & 0x08) != 0) == topMost,
+                "Preview initially follows the clock's topmost setting");
+            var clockOwner = GetWindow(clock.Handle, 4);
+            var clockStyle = GetWindowLong(clock.Handle, -20);
+            var cardBounds = card.Bounds;
+            // Reproduce the captured fault: managed Visible/TopMost stay set,
+            // but native ownership and z-order no longer match the anchor.
+            SetTestWindowOwner(card.Handle, IntPtr.Zero);
+            Check(SetWindowPos(card.Handle, new IntPtr(topMost ? -2 : -1), 0, 0, 0, 0, 0x0013),
+                "Can simulate native preview layer drift without hiding or activating it");
+            Check(card.Visible && ((GetWindowLong(card.Handle, -20) & 0x08) != 0) != topMost,
+                "Captured fault keeps the card logically visible in the wrong z-order band");
+            clock.UpdatePacificHover(true, 1800);
+            Check(GetWindow(card.Handle, 4) == clock.Handle, "Stationary hover restores lost native preview owner");
+            Check(((GetWindowLong(card.Handle, -20) & 0x08) != 0) == topMost,
+                "Stationary hover repairs native layer drift, including non-topmost mode");
+            Check(card.Bounds == cardBounds && GetForegroundWindow() == foreground,
+                "Preview repair preserves geometry and foreground focus");
+            Check(GetWindow(clock.Handle, 4) == clockOwner && GetWindowLong(clock.Handle, -20) == clockStyle,
+                "Preview repair leaves the main clock's native owner and style unchanged");
+        }
         using (var image = new Bitmap(card.Width, card.Height))
         {
             card.UpdateTime(DateTimeOffset.Parse("2026-12-31T20:59:59Z"), TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"),
@@ -629,6 +654,12 @@ internal static class Program
             bounds.Left, bounds.Bottom - 60, bounds.Width, 60, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         if (taskbar == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         return taskbar;
+    }
+
+    private static void SetTestWindowOwner(IntPtr window, IntPtr owner)
+    {
+        if (IntPtr.Size == 8) SetWindowLongPtr64(window, -8, owner);
+        else SetWindowLong32(window, -8, owner.ToInt32());
     }
 
     private static int RunOnPrivateDesktop()
@@ -749,6 +780,9 @@ internal static class Program
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder title, int size);
     [DllImport("user32.dll")] private static extern bool DestroyWindow(IntPtr window);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern IntPtr SetWindowLongPtr64(IntPtr window, int index, IntPtr value);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] private static extern int SetWindowLong32(IntPtr window, int index, int value);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")]
     private static extern bool GetLayeredWindowAttributes(IntPtr window, out uint colorKey, out byte alpha, out uint flags);
     private delegate IntPtr WindowProcedure(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);

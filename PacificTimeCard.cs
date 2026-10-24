@@ -26,6 +26,36 @@ internal sealed class PacificTimeCard : Form
 
     protected override bool ShowWithoutActivation => true;
 
+    public void ShowFor(Form clock)
+    {
+        TopMost = clock.TopMost;
+        Show(clock);
+        SynchronizeWindowOrder(clock);
+    }
+
+    public void SynchronizeWindowOrder(Form clock)
+    {
+        if (!IsHandleCreated || !clock.IsHandleCreated) return;
+        var topMost = clock.TopMost;
+        if (TopMost != topMost) TopMost = topMost;
+
+        // WinForms can replace a hidden tool window's native owner. Compare
+        // native state as well as managed properties: Visible can remain true
+        // while an unowned, non-topmost preview sits underneath normal apps.
+        var ownerChanged = GetWindow(Handle, 4) != clock.Handle;
+        if (ownerChanged)
+        {
+            if (IntPtr.Size == 8) SetWindowLongPtr64(Handle, -8, clock.Handle);
+            else SetWindowLong32(Handle, -8, clock.Handle.ToInt32());
+        }
+        var style = IntPtr.Size == 8 ? GetWindowLongPtr64(Handle, -20).ToInt64() : GetWindowLong32(Handle, -20);
+        if (ownerChanged || ((style & 0x08) != 0) != topMost)
+        {
+            SetWindowPos(Handle, new IntPtr(topMost ? -1 : -2), 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0010); // NOSIZE | NOMOVE | NOACTIVATE
+        }
+    }
+
     protected override CreateParams CreateParams
     {
         get
@@ -99,4 +129,22 @@ internal sealed class PacificTimeCard : Form
 
     [DllImport("user32.dll")]
     private static extern bool SetLayeredWindowAttributes(IntPtr window, uint color, byte alpha, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr window, uint command);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLong32(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr window, int index, IntPtr value);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLong32(IntPtr window, int index, int value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 }
