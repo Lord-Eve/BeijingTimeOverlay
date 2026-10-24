@@ -1237,7 +1237,11 @@ internal sealed class ClockForm : Form
             return;
         }
 
-        if (_pacificCard?.Visible == true) return;
+        if (_pacificCard?.Visible == true)
+        {
+            _pacificCard.SynchronizeWindowOrder(this);
+            return;
+        }
         if (_pacificCard is null || _pacificCard.IsDisposed)
         {
             _pacificCard = new PacificTimeCard();
@@ -1245,7 +1249,7 @@ internal sealed class ClockForm : Form
         _pacificCard.ConfigureDpi(_layout.Dpi);
         _pacificCard.Bounds = OverlayGeometry.PacificCardBounds(Bounds, Screen.FromHandle(Handle).WorkingArea, _layout.Dpi);
         _pacificCard.UpdateTime(DateTimeOffset.UtcNow, _pacificTimeZone!, _beijingTimeZone);
-        _pacificCard.Show(this);
+        _pacificCard.ShowFor(this);
     }
 
     private void LogHoverState(string source, bool? eligible = null)
