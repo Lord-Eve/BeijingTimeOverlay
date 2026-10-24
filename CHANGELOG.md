@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-24
+
 ### 修复
 
 - 修复太平洋时间卡片已触发却被其他应用窗口盖住、看起来像“悬停不弹出”的问题：卡片按提示窗保持置顶，仅在主浮窗暴露且鼠标悬停时显示，并在显示期间校正丢失的原生窗口归属和层级；主浮窗关闭置顶时同样支持预览，不改变主浮窗的置顶策略、不抢焦点，也不改变悬停触发条件。
@@ -14,7 +16,7 @@
 
 ### 维护
 
-- 新增默认关闭的悬停诊断：以环境变量 `BTO_HOVER_DEBUG=1` 启动后，在 `%LOCALAPPDATA%\BeijingTimeOverlay\hover-debug.log` 记录悬停条件、定时器状态、遮挡窗口信息和菜单／前台切换时间线；相同状态每秒最多记录一次。此改动用于定位 1.2.1 仍存在的悬停不弹出问题，尚未修改悬停或置顶行为。
+- 新增默认关闭的悬停诊断：以环境变量 `BTO_HOVER_DEBUG=1` 启动后，在 `%LOCALAPPDATA%\BeijingTimeOverlay\hover-debug.log` 记录悬停条件、定时器状态、遮挡窗口信息和菜单／前台切换时间线；相同状态每秒最多记录一次，便于复现问题时排查。
 - 诊断日志单文件限制为 5 MiB，只保留上一份备份，总计最多 10 MiB；分别记录光标获取、按键、范围和遮挡检查，区分失败原因与未执行的检查。
 
 ## [1.2.1] - 2026-10-19
@@ -103,7 +105,8 @@
 
 - GitHub Release 提供 Windows x64 自包含单文件 ZIP 和 SHA-256 校验文件，无需另装 .NET 8。
 
-[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/Lord-Eve/BeijingTimeOverlay/compare/v1.1.3...v1.1.4
